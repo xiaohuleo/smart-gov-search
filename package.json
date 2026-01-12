@@ -1,5 +1,5 @@
 {
-  "name": "smart-gov-search",
+  "name": "gov-search-universal",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -13,7 +13,6 @@
     "react": "^18",
     "react-dom": "^18",
     "papaparse": "^5.4.1",
-    "@google/generative-ai": "^0.2.1",
     "lucide-react": "^0.330.0",
     "clsx": "^2.1.0",
     "tailwind-merge": "^2.2.1"
