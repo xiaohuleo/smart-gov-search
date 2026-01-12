@@ -1,8 +1,8 @@
 import './globals.css'
 
 export const metadata = {
-  title: '智慧政务服务搜索 Demo',
-  description: '基于大模型的语义搜索演示',
+  title: '政务智能搜索 - 多模型测速版',
+  description: '支持切换 Groq, DeepSeek, OpenAI 进行速度测试',
 }
 
 export default function RootLayout({ children }) {
@@ -11,7 +11,7 @@ export default function RootLayout({ children }) {
       <head>
         <script src="https://cdn.tailwindcss.com"></script>
       </head>
-      <body className="bg-gray-50 min-h-screen text-gray-900">{children}</body>
+      <body className="bg-slate-50 min-h-screen text-slate-900">{children}</body>
     </html>
   )
 }
