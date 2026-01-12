@@ -4,12 +4,12 @@ import { useState, useEffect } from 'react';
 import Papa from 'papaparse';
 import { Upload, Settings, User, Zap, Save, MapPin, Briefcase } from 'lucide-react';
 
-// 🚀 速度优化配置：使用 8b 小模型，速度快 10 倍
+// 预设配置：默认使用 Groq 的 8b 模型 (速度最快)
 const PRESETS = {
   groq: { 
-    name: 'Groq (极速/推荐)', 
+    name: 'Groq (极速)', 
     baseUrl: 'https://api.groq.com/openai/v1', 
-    model: 'llama3-8b-8192' // 改用 8b 模型，闪电速度
+    model: 'llama3-8b-8192' 
   },
   deepseek: { 
     name: 'DeepSeek', 
@@ -20,14 +20,14 @@ const PRESETS = {
 };
 
 export default function Home() {
-  // --- 数据与状态 ---
+  // --- 状态管理 ---
   const [csvData, setCsvData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
   const [searchTime, setSearchTime] = useState(0);
   const [debugMsg, setDebugMsg] = useState('');
   
-  // --- 用户上下文 ---
+  // --- 上下文 ---
   const [query, setQuery] = useState('');
   const [userRole, setUserRole] = useState('自然人');
   const [location, setLocation] = useState('株洲市');
@@ -42,6 +42,7 @@ export default function Home() {
     model: PRESETS.groq.model 
   });
 
+  // 加载缓存配置
   useEffect(() => {
     const savedKey = localStorage.getItem('gov_search_api_key');
     const savedBase = localStorage.getItem('gov_search_base_url');
@@ -57,7 +58,7 @@ export default function Home() {
     localStorage.setItem('gov_search_base_url', apiConfig.baseUrl);
     localStorage.setItem('gov_search_model', apiConfig.model);
     setConfigOpen(false);
-    alert('配置已保存 (前端直连模式)');
+    alert('配置已保存');
   };
 
   const handleFileUpload = (event) => {
@@ -73,7 +74,7 @@ export default function Home() {
     });
   };
 
-  // 🔥 核心极速搜索逻辑
+  // --- 核心搜索逻辑 ---
   const handleSearch = async () => {
     if (!apiConfig.apiKey) return alert('请先配置 API Key');
     if (csvData.length === 0) return alert('请先导入 CSV');
@@ -81,80 +82,51 @@ export default function Home() {
 
     setLoading(true);
     setResults([]);
-    setDebugMsg('正在本地预筛选...');
+    setDebugMsg('本地预处理中...');
     const startTime = performance.now();
 
     try {
       // 1. 本地硬过滤：渠道 (Channel Firewall)
-      // 这一步在浏览器本地瞬间完成
       const channelFiltered = csvData.filter(item => {
         const itemChannels = item['发布渠道'] || "";
         const channels = itemChannels.split(/[,，;]/).map(c => c.trim().toUpperCase());
         const userChannel = channel.toUpperCase();
+        // 如果字段为空，默认所有渠道可见；否则必须包含当前渠道
         return channels.length === 0 || channels.includes(userChannel);
       });
 
-      // 2. 数据瘦身 (Payload Reduction)
-      // 只取前 50 条，且只发 ID 和 名称 给 AI，极大减少 token 消耗
-      const candidates = channelFiltered.slice(0, 50).map(item => ({
+      // 2. 准备 payload (只发前 40 条的名称，极大减少请求体积)
+      const candidates = channelFiltered.slice(0, 40).map(item => ({
         id: item['事项编码'],
-        n: item['事项名称'] // 只发名称，不发描述
+        n: item['事项名称']
       }));
 
-      // 3. 极速 AI 请求 (Direct Fetch)
-      // 直接从浏览器发给 Groq，不走 Vercel 后端
-      setDebugMsg('正在请求 AI 模型...');
-      
-      const systemPrompt = `你是一个相关性评分器。用户搜索: "${query}"。
-      请给以下列表中的每一项打分(0-1)，判断其与搜索词的语义相关性。
-      必须返回纯 JSON 对象，格式: {"results": [{"id":"编码", "s":0.9}]}。不要解释。`;
-
-      const apiUrl = `${apiConfig.baseUrl.replace(/\/$/, '')}/chat/completions`;
-
-      const apiRes = await fetch(apiUrl, {
+      // 3. 调用 Edge API (解决 CORS 问题)
+      setDebugMsg('AI 语义分析中...');
+      const response = await fetch('/api/search', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiConfig.apiKey}`
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: apiConfig.model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: JSON.stringify(candidates) }
-          ],
-          temperature: 0.1,
-          response_format: { type: "json_object" } // 强制 JSON
+          query,
+          candidates, // 瘦身后的数据
+          config: apiConfig
         })
       });
 
-      if (!apiRes.ok) {
-        throw new Error(`API Error: ${apiRes.status}`);
-      }
-
-      const apiJson = await apiRes.json();
-      const content = apiJson.choices[0].message.content;
+      const data = await response.json();
+      if (data.error) throw new Error(data.error);
       
-      // 4. 解析结果
-      let aiScoresMap = {};
-      try {
-        const cleanContent = content.replace(/```json/g, '').replace(/```/g, '').trim();
-        const parsed = JSON.parse(cleanContent);
-        const list = Array.isArray(parsed) ? parsed : (parsed.results || []);
-        list.forEach(p => aiScoresMap[p.id] = p.s);
-      } catch (e) {
-        console.error("AI Parse Error", e);
-      }
+      const aiScoresMap = data.scores || {};
 
-      // 5. 本地混合排序 (Hybrid Sorting)
-      setDebugMsg('正在本地排序...');
+      // 4. 本地混合排序 (Hybrid Sorting)
+      setDebugMsg('最终排序中...');
       const finalResults = channelFiltered.map(item => {
         const code = item['事项编码'];
         const aiScore = aiScoresMap[code] || 0;
 
-        // 角色匹配 (权重 10000)
+        // 角色匹配 (权重 10000 -> 绝对置顶)
         const itemTargets = (item['服务对象'] || "").split(/[,，;]/).map(t => t.trim());
-        const isRoleMatch = itemTargets.some(t => t.includes(userRole));
+        const isRoleMatch = itemTargets.some(t => t.includes(userRole)) || itemTargets.some(t => t.includes(userRole === '自然人' ? '个人' : '企业'));
         const roleScore = isRoleMatch ? 10000 : 0;
 
         // 定位匹配 (权重 100)
@@ -175,20 +147,21 @@ export default function Home() {
           ...item,
           aiScore: aiScore,
           isRoleMatch: isRoleMatch,
+          sortTags: isRoleMatch ? '角色匹配' : '其他角色',
           totalScore: roleScore + locScore + semanticScore + extraScore
         };
       });
 
-      // 排序并过滤掉低分噪音
+      // 排序规则：总分降序
       const sorted = finalResults
-        .filter(i => i.aiScore > 0.01 || i.totalScore > 1000)
+        .filter(i => i.aiScore > 0.01 || i.totalScore > 1000) // 过滤完全无关的噪音，除非角色匹配
         .sort((a, b) => b.totalScore - a.totalScore);
 
       setResults(sorted);
 
     } catch (error) {
       console.error(error);
-      alert('搜索出错: ' + error.message);
+      alert('搜索失败: ' + error.message);
     } finally {
       const endTime = performance.now();
       setSearchTime(((endTime - startTime) / 1000).toFixed(2));
@@ -202,8 +175,8 @@ export default function Home() {
       {/* 顶部栏 */}
       <div className="bg-slate-900 text-white p-4 flex justify-between items-center sticky top-0 z-20 shadow-md">
         <div>
-          <h1 className="font-bold text-lg">政务严选搜索 V4.0 (极速版)</h1>
-          <p className="text-xs text-slate-400">前端直连 Groq / 纯本地逻辑过滤</p>
+          <h1 className="font-bold text-lg">政务搜索 V5.0 (Edge版)</h1>
+          <p className="text-xs text-slate-400">已修复 CORS 问题 | 启用边缘加速</p>
         </div>
         <button onClick={() => setConfigOpen(!configOpen)} className="p-2 hover:bg-slate-700 rounded-full">
           <Settings className="w-5 h-5" />
@@ -212,7 +185,7 @@ export default function Home() {
 
       {/* 配置面板 */}
       {configOpen && (
-        <div className="bg-white p-4 border-b space-y-3 shadow-inner animate-in slide-in-from-top-2">
+        <div className="bg-white p-4 border-b space-y-3 shadow-inner">
           <div className="flex gap-2 mb-2 overflow-x-auto pb-1">
             {Object.entries(PRESETS).map(([key, p]) => (
               <button key={key} onClick={() => setApiConfig({...apiConfig, baseUrl: p.baseUrl, model: p.model})} 
@@ -222,9 +195,18 @@ export default function Home() {
             ))}
           </div>
           <div className="grid gap-2">
-            <input type="text" value={apiConfig.baseUrl} onChange={e => setApiConfig({...apiConfig, baseUrl: e.target.value})} className="w-full p-2 border rounded text-xs font-mono bg-gray-50" placeholder="Base URL" />
-            <input type="text" value={apiConfig.model} onChange={e => setApiConfig({...apiConfig, model: e.target.value})} className="w-full p-2 border rounded text-xs font-mono bg-gray-50" placeholder="Model Name" />
-            <input type="password" value={apiConfig.apiKey} onChange={e => setApiConfig({...apiConfig, apiKey: e.target.value})} className="w-full p-2 border rounded text-xs font-mono bg-gray-50" placeholder="API Key" />
+            <div>
+              <label className="text-xs font-bold text-gray-500">Base URL</label>
+              <input type="text" value={apiConfig.baseUrl} onChange={e => setApiConfig({...apiConfig, baseUrl: e.target.value})} className="w-full p-2 border rounded text-xs font-mono bg-gray-50" placeholder="https://api.openai.com/v1" />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-500">Model Name</label>
+              <input type="text" value={apiConfig.model} onChange={e => setApiConfig({...apiConfig, model: e.target.value})} className="w-full p-2 border rounded text-xs font-mono bg-gray-50" placeholder="gpt-4" />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-500">API Key</label>
+              <input type="password" value={apiConfig.apiKey} onChange={e => setApiConfig({...apiConfig, apiKey: e.target.value})} className="w-full p-2 border rounded text-xs font-mono bg-gray-50" placeholder="sk-..." />
+            </div>
           </div>
           <button onClick={saveConfig} className="w-full bg-slate-800 text-white py-2 rounded text-xs flex justify-center gap-2">
             <Save className="w-4 h-4" /> 保存并生效
@@ -233,7 +215,7 @@ export default function Home() {
       )}
 
       <div className="p-4 space-y-4 flex-1">
-        {/* 数据导入 & 上下文 */}
+        {/* 数据导入 & 环境模拟 */}
         <div className="bg-white p-4 rounded-lg border shadow-sm space-y-4">
           <div className="flex justify-between items-center pb-2 border-b">
             <span className="text-sm font-bold flex items-center gap-2"><Settings className="w-4 h-4"/> 模拟环境</span>
@@ -251,7 +233,6 @@ export default function Home() {
                 <option value="IOS">iOS</option>
                 <option value="HarmonyOS">HarmonyOS</option>
                 <option value="微信小程序">微信小程序</option>
-                <option value="支付宝小程序">支付宝小程序</option>
               </select>
             </div>
             <div>
@@ -268,7 +249,7 @@ export default function Home() {
             <input type="text" value={location} onChange={e => setLocation(e.target.value)} className="w-full pl-8 p-2 border rounded text-sm" />
           </div>
 
-          <label className="flex items-center gap-2 text-xs text-gray-600 pt-1">
+          <label className="flex items-center gap-2 text-xs text-gray-600 pt-1 cursor-pointer">
              <input type="checkbox" checked={useSatisfaction} onChange={e => setUseSatisfaction(e.target.checked)} className="rounded text-blue-600"/>
              启用满意度加权
           </label>
@@ -291,7 +272,7 @@ export default function Home() {
             <div key={idx} className="bg-white border rounded-lg p-3 shadow-sm hover:border-blue-400 transition relative overflow-hidden">
               <div className={`absolute top-0 right-0 px-2 py-0.5 text-[10px] font-bold rounded-bl-lg 
                 ${item.isRoleMatch ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
-                {item.isRoleMatch ? '角色匹配' : '其他角色'}
+                {item.sortTags}
               </div>
 
               <h3 className="font-bold text-gray-800 text-sm pr-16">{item['事项名称']}</h3>
@@ -305,7 +286,7 @@ export default function Home() {
                 </span>
                 {item.aiScore > 0.5 && (
                   <span className="px-2 py-0.5 rounded bg-orange-50 text-orange-700 text-[10px]">
-                     AI相关度高
+                     AI强相关
                   </span>
                 )}
               </div>
