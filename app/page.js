@@ -1,220 +1,292 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Papa from 'papaparse';
-import { Upload, Search, Loader2, Settings, User, MapPin, Smartphone, ThumbsUp, BarChart3 } from 'lucide-react';
+import { Upload, Search, Settings, User, Zap, Save, AlertCircle } from 'lucide-react';
+
+// 预设的一些模型配置，方便你演示时一键切换
+const PRESETS = {
+  groq: {
+    name: 'Groq (极速/推荐)',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    model: 'llama3-70b-8192',
+    note: '速度最快，演示首选'
+  },
+  deepseek: {
+    name: 'DeepSeek (国产之光)',
+    baseUrl: 'https://api.deepseek.com', // 或者是 deepseek 的 openai 兼容地址
+    model: 'deepseek-chat',
+    note: '中文理解能力极强'
+  },
+  moonshot: {
+    name: 'Kimi (月之暗面)',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    model: 'moonshot-v1-8k',
+    note: '长文本友好'
+  },
+  custom: {
+    name: '自定义 (OpenAI格式)',
+    baseUrl: '',
+    model: '',
+    note: '任意兼容接口'
+  }
+};
 
 export default function Home() {
+  // --- 数据与状态 ---
   const [csvData, setCsvData] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [searchStatus, setSearchStatus] = useState(''); // analyzing, ranking...
   const [results, setResults] = useState([]);
+  const [searchTime, setSearchTime] = useState(0); // 记录搜索耗时
   
-  // 上下文设置
+  // --- 搜索上下文 ---
   const [query, setQuery] = useState('');
-  const [userRole, setUserRole] = useState('自然人'); // 自然人, 法人
-  const [location, setLocation] = useState('省公安厅'); // 模拟定位/部门
-  const [channel, setChannel] = useState('Android'); // Android, iOS, Web
-  const [useSatisfaction, setUseSatisfaction] = useState(false); // 满意度排序开关
-  const [useHotness, setUseHotness] = useState(true); // 是否利用高频事项排序
-  const [fileName, setFileName] = useState('');
+  const [userRole, setUserRole] = useState('自然人');
+  const [location, setLocation] = useState('省公安厅');
+  const [channel, setChannel] = useState('Android');
+  const [useSatisfaction, setUseSatisfaction] = useState(false);
+  const [useHotness, setUseHotness] = useState(true);
 
-  // 处理文件上传
+  // --- API 配置 (默认加载 Groq 预设) ---
+  const [configOpen, setConfigOpen] = useState(true); // 默认展开配置面板
+  const [apiConfig, setApiConfig] = useState({
+    baseUrl: PRESETS.groq.baseUrl,
+    apiKey: '',
+    model: PRESETS.groq.model
+  });
+
+  // 从本地缓存加载 API Key (避免刷新丢失)
+  useEffect(() => {
+    const savedKey = localStorage.getItem('gov_search_api_key');
+    const savedBase = localStorage.getItem('gov_search_base_url');
+    if (savedKey) setApiConfig(prev => ({ ...prev, apiKey: savedKey }));
+    if (savedBase) setApiConfig(prev => ({ ...prev, baseUrl: savedBase }));
+  }, []);
+
+  // 切换预设
+  const applyPreset = (key) => {
+    const p = PRESETS[key];
+    setApiConfig(prev => ({
+      ...prev,
+      baseUrl: p.baseUrl,
+      model: p.model
+    }));
+  };
+
+  // 保存配置
+  const saveConfig = () => {
+    localStorage.setItem('gov_search_api_key', apiConfig.apiKey);
+    localStorage.setItem('gov_search_base_url', apiConfig.baseUrl);
+    setConfigOpen(false);
+    alert('配置已保存到本地浏览器');
+  };
+
+  // --- 逻辑处理 ---
   const handleFileUpload = (event) => {
     const file = event.target.files[0];
     if (!file) return;
-    setFileName(file.name);
-    
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
-      complete: (results) => {
-        console.log("CSV Parsed:", results.data);
-        setCsvData(results.data);
-        alert(`成功导入 ${results.data.length} 条服务数据`);
-      },
-      error: (error) => {
-        alert('解析CSV失败: ' + error.message);
+      complete: (res) => {
+        setCsvData(res.data);
+        alert(`成功导入 ${res.data.length} 条数据`);
       }
     });
   };
 
-  // 执行智能搜索
   const handleSearch = async () => {
-    if (csvData.length === 0) {
-      alert('请先上传CSV数据文件');
+    if (!apiConfig.apiKey) {
+      alert('请先在配置面板输入 API Key');
+      setConfigOpen(true);
       return;
     }
-    if (!query.trim()) {
-      alert('请输入搜索内容');
-      return;
-    }
+    if (csvData.length === 0) return alert('请先导入 CSV');
+    if (!query.trim()) return alert('请输入搜索词');
 
     setLoading(true);
-    setSearchStatus('正在分析用户意图...');
     setResults([]);
+    const startTime = performance.now();
 
     try {
-      // 1. 本地硬过滤 (规则引擎)
-      // 这里的字段名必须和CSV表头一致
+      // 1. 前端粗筛
       const preFiltered = csvData.filter(item => {
-        // 渠道过滤 (如果CSV里有'发布渠道'字段)
         if (item['发布渠道'] && !item['发布渠道'].includes(channel)) return false;
-        
-        // 对象过滤 (如果CSV里有'服务对象'字段)
-        // 逻辑：如果我是自然人，事项必须包含自然人；如果我是法人，事项必须包含法人
         if (item['服务对象']) {
             if (userRole === '自然人' && !item['服务对象'].includes('自然人')) return false;
             if (userRole === '法人' && !item['服务对象'].includes('法人') && !item['服务对象'].includes('企业')) return false;
         }
-
-        // 定位过滤 (简单模拟：如果事项是市级事项，需匹配城市)
-        // 实际逻辑会更复杂，这里仅作演示：不做强制过滤，而是交给大模型降权
-        return true; 
+        return true;
       });
 
-      setSearchStatus(`筛选出 ${preFiltered.length} 条符合渠道和身份的数据，正在进行大模型语义匹配...`);
-
-      // 2. 调用后端 API 进行 AI 排序
+      // 2. 调用后端 API (后端只是一个代理，防止CORS问题)
       const response = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query,
-          items: preFiltered, // 发送预筛选的数据
-          context: {
-            userRole,
-            location,
-            useSatisfaction,
-            useHotness
-          }
+          items: preFiltered,
+          context: { userRole, location, useSatisfaction, useHotness },
+          config: apiConfig // 把配置传给后端
         })
       });
 
-      if (!response.ok) throw new Error('API请求失败');
-      
       const data = await response.json();
-      setResults(data.results);
+      
+      if (data.error) throw new Error(data.error);
+      setResults(data.results || []);
 
     } catch (error) {
       console.error(error);
-      alert('搜索出错，请检查API Key或网络');
+      alert('搜索失败: ' + error.message);
     } finally {
+      const endTime = performance.now();
+      setSearchTime(((endTime - startTime) / 1000).toFixed(2)); // 计算耗时(秒)
       setLoading(false);
-      setSearchStatus('');
     }
   };
 
   return (
-    <div className="max-w-md mx-auto bg-white min-h-screen shadow-lg flex flex-col">
-      {/* 头部 */}
-      <div className="bg-blue-600 p-4 text-white">
-        <h1 className="text-xl font-bold flex items-center gap-2">
-          <Settings className="w-5 h-5" /> 智慧政务搜索 Demo
-        </h1>
-        <p className="text-xs text-blue-100 mt-1">基于 Google Gemini 大模型构建</p>
+    <div className="max-w-xl mx-auto min-h-screen bg-white shadow-xl flex flex-col font-sans">
+      {/* 顶部导航 */}
+      <div className="bg-slate-900 text-white p-4 flex justify-between items-center sticky top-0 z-20">
+        <div>
+          <h1 className="font-bold text-lg">政务智能搜索 Demo</h1>
+          <p className="text-xs text-slate-400">基于大模型语义理解</p>
+        </div>
+        <button onClick={() => setConfigOpen(!configOpen)} className="p-2 hover:bg-slate-700 rounded-full transition">
+          <Settings className="w-5 h-5" />
+        </button>
       </div>
 
-      <div className="p-4 flex-1 overflow-y-auto">
-        {/* 1. 数据源设置 */}
-        <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-100">
-          <h2 className="text-sm font-bold text-blue-800 mb-3 flex items-center gap-2">
-            <Upload className="w-4 h-4" /> 第一步：导入数据源 (CSV)
-          </h2>
-          <label className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer">
-            <input type="file" accept=".csv" onChange={handleFileUpload} className="block w-full text-sm text-slate-500"/>
-          </label>
-          {fileName && <p className="text-xs text-green-600 mt-2">已加载: {fileName}</p>}
-        </div>
-
-        {/* 2. 上下文模拟设置 */}
-        <div className="mb-6 space-y-3">
-          <h2 className="text-sm font-bold text-gray-800 flex items-center gap-2">
-            <User className="w-4 h-4" /> 第二步：模拟用户上下文
-          </h2>
+      {/* 配置面板 (可折叠) */}
+      {configOpen && (
+        <div className="bg-slate-100 p-4 border-b border-slate-200 text-sm space-y-3 animate-in slide-in-from-top-2">
+          <div className="flex gap-2 mb-2 overflow-x-auto pb-2">
+            {Object.entries(PRESETS).map(([key, p]) => (
+              <button key={key} onClick={() => applyPreset(key)} 
+                className={`px-3 py-1.5 rounded-full whitespace-nowrap border ${apiConfig.baseUrl === p.baseUrl ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-slate-300'}`}>
+                {p.name}
+              </button>
+            ))}
+          </div>
           
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3">
             <div>
-              <label className="text-xs text-gray-500 mb-1 block">用户角色</label>
-              <select value={userRole} onChange={e => setUserRole(e.target.value)} className="w-full p-2 border rounded text-sm bg-white">
-                <option value="自然人">自然人 (个人)</option>
-                <option value="法人">法人 (企业)</option>
-              </select>
+              <label className="block text-xs font-bold text-slate-500 mb-1">API Base URL</label>
+              <input type="text" value={apiConfig.baseUrl} onChange={e => setApiConfig({...apiConfig, baseUrl: e.target.value})} 
+                className="w-full p-2 border rounded font-mono text-xs" placeholder="https://api.openai.com/v1" />
             </div>
             <div>
-              <label className="text-xs text-gray-500 mb-1 block">当前设备/渠道</label>
-              <select value={channel} onChange={e => setChannel(e.target.value)} className="w-full p-2 border rounded text-sm bg-white">
-                <option value="Android">Android App</option>
-                <option value="iOS">iOS App</option>
-                <option value="HarmonyOS">HarmonyOS</option>
-                <option value="Web">Web 网页</option>
-              </select>
+              <label className="block text-xs font-bold text-slate-500 mb-1">Model Name</label>
+              <input type="text" value={apiConfig.model} onChange={e => setApiConfig({...apiConfig, model: e.target.value})} 
+                className="w-full p-2 border rounded font-mono text-xs" placeholder="gpt-3.5-turbo" />
             </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-500 mb-1">API Key (仅本地存储)</label>
+              <input type="password" value={apiConfig.apiKey} onChange={e => setApiConfig({...apiConfig, apiKey: e.target.value})} 
+                className="w-full p-2 border rounded font-mono text-xs" placeholder="sk-..." />
+            </div>
+            <button onClick={saveConfig} className="w-full bg-slate-800 text-white py-2 rounded flex justify-center items-center gap-2 hover:bg-slate-700">
+              <Save className="w-4 h-4" /> 保存并收起配置
+            </button>
           </div>
+        </div>
+      )}
 
+      {/* 主内容区 */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+        
+        {/* 数据导入 */}
+        <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 flex items-center justify-between">
           <div>
-             <label className="text-xs text-gray-500 mb-1 block">模拟定位/所在部门</label>
-             <input type="text" value={location} onChange={e => setLocation(e.target.value)} className="w-full p-2 border rounded text-sm" placeholder="例如：省公安厅 或 长沙市"/>
+            <h3 className="font-bold text-blue-900 text-sm">导入服务事项数据</h3>
+            <p className="text-xs text-blue-600">支持 CSV 格式文件</p>
           </div>
+          <label className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm cursor-pointer hover:bg-blue-700 transition flex items-center gap-2">
+            <Upload className="w-4 h-4" /> 选择文件
+            <input type="file" accept=".csv" onChange={handleFileUpload} className="hidden" />
+          </label>
+        </div>
 
-          <div className="flex gap-4 mt-2">
-            <label className="flex items-center space-x-2 text-xs text-gray-700 cursor-pointer">
-              <input type="checkbox" checked={useSatisfaction} onChange={e => setUseSatisfaction(e.target.checked)} className="rounded text-blue-600"/>
-              <span className="flex items-center gap-1"><ThumbsUp className="w-3 h-3"/> 启用满意度加权</span>
-            </label>
-            <label className="flex items-center space-x-2 text-xs text-gray-700 cursor-pointer">
-              <input type="checkbox" checked={useHotness} onChange={e => setUseHotness(e.target.checked)} className="rounded text-blue-600"/>
-              <span className="flex items-center gap-1"><BarChart3 className="w-3 h-3"/> 优先高频事项</span>
-            </label>
+        {/* 模拟用户画像 */}
+        <div className="space-y-3">
+          <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2">
+            <User className="w-4 h-4" /> 上下文模拟
+          </h3>
+          <div className="grid grid-cols-2 gap-3">
+            <select value={userRole} onChange={e => setUserRole(e.target.value)} className="p-2 border rounded text-sm bg-white">
+              <option value="自然人">自然人</option>
+              <option value="法人">法人 (企业)</option>
+            </select>
+            <select value={channel} onChange={e => setChannel(e.target.value)} className="p-2 border rounded text-sm bg-white">
+              <option value="Android">Android</option>
+              <option value="iOS">iOS</option>
+              <option value="Web">Web网页</option>
+            </select>
+          </div>
+          <input type="text" value={location} onChange={e => setLocation(e.target.value)} className="w-full p-2 border rounded text-sm" placeholder="当前定位，如：长沙市" />
+          
+          <div className="flex gap-4 pt-2">
+             <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+               <input type="checkbox" checked={useSatisfaction} onChange={e => setUseSatisfaction(e.target.checked)} />
+               <span>启用满意度加权</span>
+             </label>
+             <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+               <input type="checkbox" checked={useHotness} onChange={e => setUseHotness(e.target.checked)} />
+               <span>优先高频事项</span>
+             </label>
           </div>
         </div>
 
-        {/* 3. 搜索区域 */}
-        <div className="sticky top-0 bg-white py-2 z-10 border-b mb-4">
-          <div className="relative">
+      </div>
+
+      {/* 底部搜索栏 (吸底) */}
+      <div className="p-4 bg-white border-t space-y-4">
+        {results.length > 0 && (
+           <div className="text-xs text-slate-400 flex justify-between px-1">
+             <span>找到 {results.length} 个结果</span>
+             <span className="flex items-center gap-1 text-green-600"><Zap className="w-3 h-3"/> 耗时 {searchTime}s</span>
+           </div>
+        )}
+        
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-3 text-slate-400 w-5 h-5" />
             <input 
               type="text" 
               value={query}
               onChange={e => setQuery(e.target.value)}
-              placeholder="请输入您想办理的业务，如：身份证丢了" 
-              className="w-full p-3 pl-10 border-2 border-blue-500 rounded-full shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
               onKeyDown={e => e.key === 'Enter' && handleSearch()}
+              placeholder="我想办理..." 
+              className="w-full pl-10 pr-4 py-3 bg-slate-100 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
             />
-            <Search className="absolute left-3 top-3.5 text-blue-500 w-5 h-5" />
-            <button 
-              onClick={handleSearch}
-              disabled={loading}
-              className="absolute right-1 top-1 bg-blue-600 text-white px-4 py-2 rounded-full text-sm font-medium hover:bg-blue-700 disabled:bg-gray-400"
-            >
-              {loading ? '搜索中' : '搜索'}
-            </button>
           </div>
-          {searchStatus && <p className="text-xs text-blue-500 mt-2 text-center animate-pulse">{searchStatus}</p>}
+          <button 
+            onClick={handleSearch} 
+            disabled={loading}
+            className="bg-blue-600 text-white px-6 rounded-xl font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
+          >
+            {loading ? '...' : '搜索'}
+          </button>
         </div>
 
-        {/* 4. 结果展示 */}
-        <div className="space-y-3 pb-8">
-          {results.length === 0 && !loading && (
-            <div className="text-center text-gray-400 py-10">
-              <p>暂无搜索结果</p>
-              <p className="text-xs mt-1">请上传CSV并输入关键词</p>
-            </div>
-          )}
-
-          {results.map((item, index) => (
-            <div key={item.code} className="p-4 border rounded-lg hover:bg-gray-50 transition-colors bg-white shadow-sm border-l-4 border-l-blue-500">
+        {/* 结果列表 */}
+        <div className="space-y-3 max-h-[40vh] overflow-y-auto">
+          {results.map((item, idx) => (
+            <div key={idx} className="p-3 border border-slate-100 rounded-xl shadow-sm bg-white hover:border-blue-300 transition group">
               <div className="flex justify-between items-start">
-                <h3 className="font-bold text-gray-800 text-sm">{item.name}</h3>
-                <span className="text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full whitespace-nowrap">
-                  匹配度: {Math.round(item.score * 100)}%
-                </span>
+                <div className="font-bold text-slate-800 text-sm">{item.name}</div>
+                <div className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded-full font-mono">
+                  {(item.score * 100).toFixed(0)}%
+                </div>
               </div>
-              <p className="text-xs text-gray-500 mt-1 line-clamp-2">{item.description}</p>
-              
-              <div className="flex flex-wrap gap-2 mt-2">
-                <span className="text-[10px] bg-gray-100 px-2 py-0.5 rounded text-gray-600">编码: {item.code}</span>
-                {item.reason && <span className="text-[10px] bg-yellow-50 text-yellow-700 px-2 py-0.5 rounded border border-yellow-200">AI推荐: {item.reason}</span>}
-              </div>
+              <div className="text-xs text-slate-500 mt-1 line-clamp-2">{item.description}</div>
+              {item.reason && (
+                <div className="mt-2 text-[10px] text-amber-700 bg-amber-50 p-2 rounded flex items-start gap-1">
+                  <span className="font-bold">AI:</span> {item.reason}
+                </div>
+              )}
             </div>
           ))}
         </div>
