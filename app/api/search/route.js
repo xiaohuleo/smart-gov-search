@@ -1,86 +1,99 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextResponse } from "next/server";
 
 export async function POST(req) {
   try {
-    const { query, items, context } = await req.json();
+    const { query, items, context, config } = await req.json();
 
-    // 初始化 Gemini
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-
-    // 步骤1：数据瘦身
-    // 为了防止超过大模型免费额度，只取前50条最相关的数据（这里简单根据文本包含做了初筛，实际可以用更好的算法）
-    // 在Demo中，我们假设items已经是经过前端筛选过的，直接取前30条发送给AI
-    const candidates = items.slice(0, 30).map(item => ({
-      code: item['事项编码'] || 'NO_CODE',
-      name: item['事项名称'],
-      desc: item['事项描述'] || item['事项名称'], // 如果没描述，用名称代替
-      dept: item['所属市州单位'],
-      hot: item['是否高频事项'] === '是',
-      // 这里假设CSV可能有满意度字段，如果没有则随机模拟一个以便演示
-      satisfaction: item['满意度'] ? parseFloat(item['满意度']) : 0
-    }));
-
-    // 步骤2：构建 Prompt (提示词)
-    const prompt = `
-      你是一个政务服务智能搜索助手。
-      用户正在搜索: "${query}"
-      
-      用户上下文:
-      - 角色: ${context.userRole}
-      - 所在位置/部门: ${context.location}
-      - 是否优先高频: ${context.useHotness}
-      - 是否考虑满意度: ${context.useSatisfaction}
-
-      请从下面的候选服务列表中，分析用户意图，找出最相关的服务。
-      
-      排序规则:
-      1. 语义相关性最重要（比如搜"丢了"要匹配"补领"）。
-      2. 如果用户在"长沙市"，优先推荐"长沙市"或"省本级"单位的事项。
-      3. 如果启用满意度，满意度高的稍微加分。
-      4. 如果启用高频，isHot为true的加分。
-
-      候选列表 JSON:
-      ${JSON.stringify(candidates)}
-
-      请返回一个 JSON 数组，只包含最相关的最多 5 个结果。
-      返回格式:
-      [
-        { "code": "事项编码", "name": "事项名称", "reason": "推荐理由(简短)", "score": 0.95 }
-      ]
-      注意：只返回纯 JSON，不要 Markdown 格式。
-    `;
-
-    // 步骤3：调用 AI
-    const result = await model.generateContent(prompt);
-    const responseText = result.response.text();
-
-    // 清理 Markdown 标记 (Gemini 有时会返回 ```json ...)
-    const cleanJson = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-    
-    let aiResults = [];
-    try {
-        aiResults = JSON.parse(cleanJson);
-    } catch (e) {
-        console.error("AI JSON Parse Error", responseText);
-        // 如果AI解析失败，回退到简单的名称匹配
-        return NextResponse.json({ results: [] });
+    // 1. 安全检查
+    if (!config.apiKey || !config.baseUrl) {
+      return NextResponse.json({ error: "API 配置缺失" }, { status: 400 });
     }
 
-    // 将AI结果和原始描述合并，以便前端展示
-    const finalResults = aiResults.map(aiItem => {
-        const original = candidates.find(c => c.code === aiItem.code);
-        return {
-            ...aiItem,
-            description: original ? original.desc : ''
-        };
+    // 2. 准备数据 (为了速度和Token节省，只取前20条进行AI重排)
+    const candidates = items.slice(0, 20).map(item => ({
+      id: item['事项编码'],
+      n: item['事项名称'], // 缩写key以节省token
+      d: (item['事项描述'] || item['事项名称']).substring(0, 100), // 截断描述
+      sat: item['满意度'],
+      hot: item['是否高频事项']
+    }));
+
+    // 3. 构建 Prompt
+    const systemPrompt = `你是一个政务搜索排序引擎。用户输入查询，你需从候选列表中选出最相关的项。
+    用户画像: 角色[${context.userRole}], 位置[${context.location}]。
+    排序逻辑:
+    1. 语义最相关优先。
+    2. 如果开启高频[${context.useHotness}]，hot='是'的加分。
+    3. 如果开启满意度[${context.useSatisfaction}]，sat分高的加分。
+    4. 必须返回纯 JSON 数组，格式: [{"id":"编码","score":0.9,"reason":"简短理由"}]。`;
+
+    const userPrompt = `查询: "${query}"
+    候选数据: ${JSON.stringify(candidates)}`;
+
+    // 4. 调用第三方 API (通用 Fetch)
+    // 注意：大多数兼容 OpenAI 的接口都使用 /chat/completions 路径
+    // 如果 config.baseUrl 结尾没有 /chat/completions，我们需要尝试自动处理，但这里为了简单，
+    // 我们假设 config.baseUrl 是直到 /v1 的路径 (如 https://api.groq.com/openai/v1)
+    
+    const apiUrl = `${config.baseUrl.replace(/\/$/, '')}/chat/completions`;
+
+    const apiRes = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`
+      },
+      body: JSON.stringify({
+        model: config.model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        temperature: 0.1, // 低温度以保证 JSON 格式稳定
+        response_format: { type: "json_object" } // 尝试强制 JSON 模式 (部分模型支持)
+      })
     });
+
+    if (!apiRes.ok) {
+      const errText = await apiRes.text();
+      throw new Error(`Model API Error: ${apiRes.status} - ${errText}`);
+    }
+
+    const apiJson = await apiRes.json();
+    const content = apiJson.choices[0].message.content;
+
+    // 5. 解析 AI 返回的 JSON
+    // 有些模型可能包含 ```json 包裹，需要清洗
+    const cleanContent = content.replace(/```json/g, '').replace(/```/g, '').trim();
+    let rankedItems = [];
+    try {
+        const parsed = JSON.parse(cleanContent);
+        // 兼容返回可能是 { results: [...] } 或者直接是 [...]
+        rankedItems = Array.isArray(parsed) ? parsed : (parsed.results || []);
+    } catch (e) {
+        console.error("JSON Parse Fail:", cleanContent);
+        return NextResponse.json({ results: [], error: "AI 返回格式错误" });
+    }
+
+    // 6. 回填详细信息给前端
+    const finalResults = rankedItems.map(r => {
+        const original = items.find(i => i['事项编码'] === r.id);
+        if (!original) return null;
+        return {
+            name: original['事项名称'],
+            description: original['事项描述'],
+            score: r.score,
+            reason: r.reason
+        };
+    }).filter(Boolean);
+
+    // 按分数降序
+    finalResults.sort((a, b) => b.score - a.score);
 
     return NextResponse.json({ results: finalResults });
 
   } catch (error) {
-    console.error("Search API Error:", error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    console.error("Proxy Error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
