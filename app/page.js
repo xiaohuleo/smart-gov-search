@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Papa from 'papaparse';
-import { Upload, Settings, Zap, Save, MapPin, Briefcase, Building2, Search, XCircle } from 'lucide-react';
+import { Upload, Settings, Zap, Save, MapPin, Briefcase, Building2, Search, AlertTriangle } from 'lucide-react';
 
 const PRESETS = {
   groq: { name: 'Groq (极速)', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama3-8b-8192' },
@@ -10,14 +10,27 @@ const PRESETS = {
   custom: { name: '自定义', baseUrl: '', model: '' }
 };
 
-// 动词映射表：把用户的口语转换为政务术语
-const VERB_MAPPINGS = {
+// V12.0 升级：超级口语映射表
+const SEMANTIC_MAPPINGS = {
+  // 破损类 -> 换领
+  "坏": ["损坏", "换领", "更换", "失效"],
+  "烂": ["损坏", "换领"],
+  "折": ["损坏", "换领"],
+  "断": ["损坏", "换领"],
+  "模糊": ["损坏", "换领"],
+  "旧": ["到期", "换领", "有效期"],
+  
+  // 变更类 -> 变更
   "改": ["变更", "更正", "修改"],
-  "换": ["换领", "更换"],
-  "补": ["补领", "补办", "挂失"],
+  "错": ["变更", "更正"],
+  
+  // 遗失类 -> 补领
   "丢": ["补领", "补办", "遗失", "挂失"],
+  "掉": ["补领", "补办", "遗失"],
+  "偷": ["补领", "补办", "挂失"],
+  
+  // 查询类
   "查": ["查询", "核验", "进度", "打印"],
-  "看": ["查询", "核验", "预览"],
   "办": ["申领", "办理", "申请"]
 };
 
@@ -30,7 +43,6 @@ export default function Home() {
   
   const addLog = (msg) => setLogs(prev => [`${msg}`, ...prev]);
 
-  // 上下文
   const [query, setQuery] = useState('');
   const [userRole, setUserRole] = useState('自然人');
   const [location, setLocation] = useState('株洲市');
@@ -84,6 +96,7 @@ export default function Home() {
         const itemChannels = item['发布渠道'] || "";
         const channels = itemChannels.split(/[,，;]/).map(c => c.trim().toUpperCase());
         const userChannel = channel.toUpperCase();
+        // 如果数据没填渠道，默认显示；否则必须包含当前渠道
         return channels.length === 0 || channels.includes(userChannel);
       });
 
@@ -95,7 +108,7 @@ export default function Home() {
       }));
 
       // 3. 请求 AI
-      addLog('🤖 AI 正在识别动作与意图...');
+      addLog('🤖 AI 语义分析中...');
       const response = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -106,52 +119,50 @@ export default function Home() {
       const aiScoresMap = data.scores || {};
       addLog('✅ AI 分析完成');
 
-      // 4. V11.0 排序算法：动词锚点 + 噪音熔断
+      // 4. V12.0 排序算法：口语泛化 + 兜底机制
       const finalResults = channelFiltered.map(item => {
         const code = item['事项编码'];
         const name = item['事项名称'];
+        const desc = item['事项描述'] || "";
         const aiScore = aiScoresMap[code] || 0;
         
-        // --- A. AI 基准分 (0-1000) ---
-        // 放大差距：高分(0.9)得900，低分(0.1)得100
         let totalScore = aiScore * 1000; 
 
-        // --- B. 动词精准锚点 (Verb Anchoring) [关键修复] ---
+        // --- A. 口语精准锚点 (Semantic Anchoring) ---
         let actionBonus = 0;
-        let isActionMatch = false;
+        let hitKeyword = "";
 
-        // 遍历映射表，看用户是否说了某个“口语动词”
-        Object.keys(VERB_MAPPINGS).forEach(userVerb => {
+        Object.keys(SEMANTIC_MAPPINGS).forEach(userVerb => {
           if (query.includes(userVerb)) {
-            // 如果用户说了“改”，我们检查服务名称里有没有“变更”、“修改”
-            const officialVerbs = VERB_MAPPINGS[userVerb];
-            const hasOfficialVerb = officialVerbs.some(v => name.includes(v));
+            const officialTerms = SEMANTIC_MAPPINGS[userVerb];
+            // 检查名称 OR 描述 是否包含官方术语
+            const hasOfficialTerm = officialTerms.some(term => name.includes(term) || desc.includes(term));
             
-            if (hasOfficialVerb) {
-              actionBonus = 800; // 巨大的加分！
-              isActionMatch = true;
+            if (hasOfficialTerm) {
+              actionBonus = 800; // 命中动作，大幅加分
+              hitKeyword = `${userVerb}->${officialTerms[0]}...`;
             }
           }
         });
-        
-        // 如果没有动词匹配，但有核心名词匹配，给少量分
-        if (!isActionMatch && (query.includes("姓名") && name.includes("姓名"))) {
-           actionBonus += 100;
-        }
 
+        // 名词兜底：如果用户搜"身份证"，事项里也有"身份证"，至少给点分，防止被当成垃圾过滤掉
+        if (query.includes("身份证") && name.includes("身份证")) {
+            if (actionBonus === 0) actionBonus += 100; // 没命中动作，但命中了名词
+        }
+        
         totalScore += actionBonus;
 
-        // --- C. 角色 & 定位 ---
+        // --- B. 角色 & 定位 ---
         const itemTargets = (item['服务对象'] || "").split(/[,，;]/).map(t => t.trim());
         const isRoleMatch = itemTargets.some(t => t.includes(userRole)) || itemTargets.some(t => t.includes(userRole === '自然人' ? '个人' : '企业'));
         
         const itemDept = item['所属市州单位'] || "";
         const isLocValid = itemDept.includes(location) || itemDept.includes('省') || itemDept.includes('中央') || itemDept.includes('国家');
 
-        if (!isRoleMatch) totalScore -= 500; // 角色不对直接沉底
-        if (!isLocValid) totalScore -= 500;  // 外地直接沉底
+        if (!isRoleMatch) totalScore -= 500; 
+        if (!isLocValid) totalScore -= 500;
 
-        // --- D. 附加 ---
+        // --- C. 附加 ---
         if (item['是否高频事项'] === '是') totalScore += 50; 
         if (useSatisfaction && item['满意度']) totalScore += parseFloat(item['满意度']) * 5;
 
@@ -159,24 +170,18 @@ export default function Home() {
           ...item,
           aiScore,
           actionBonus,
+          hitKeyword,
           isRoleMatch,
           isLocValid,
           totalScore
         };
       });
 
-      // 5. 排序与熔断 (Cut-off)
+      // 5. 排序 (移除激进的 filter)
+      // V12修改：只要分数 > 0 或者 有关键词命中，就显示。
+      // 这样至少"身份证损坏"会因为名词匹配显示出来，哪怕排在后面，方便调试。
       const sorted = finalResults
-        .filter(item => {
-          // 熔断机制：只显示有一定相关性的结果
-          // 门槛：AI分 > 0.3 (弱相关) 或者 有动作匹配加分
-          const isValid = item.aiScore > 0.2 || item.actionBonus > 100;
-          if (!isValid) {
-             // 可以在这里打印被过滤掉的项用于调试
-             // console.log("过滤掉:", item['事项名称'], item.totalScore);
-          }
-          return isValid;
-        })
+        .filter(i => i.totalScore > 0 || i.actionBonus > 0) 
         .sort((a, b) => b.totalScore - a.totalScore);
 
       setResults(sorted);
@@ -196,8 +201,8 @@ export default function Home() {
       {/* 顶部栏 */}
       <div className="bg-slate-900 text-white p-4 flex justify-between items-center sticky top-0 z-20 shadow-md">
         <div>
-          <h1 className="font-bold text-lg">政务搜索 V11.0 (洁癖版)</h1>
-          <p className="text-xs text-slate-400">动词锚点 + 噪音熔断过滤</p>
+          <h1 className="font-bold text-lg">政务搜索 V12.0 (口语版)</h1>
+          <p className="text-xs text-slate-400">支持"坏了/丢了"等口语识别</p>
         </div>
         <button onClick={() => setConfigOpen(!configOpen)} className="p-2 hover:bg-slate-700 rounded-full">
           <Settings className="w-5 h-5" />
@@ -276,22 +281,24 @@ export default function Home() {
             </span>
           </div>
         ) : (
-          !loading && <div className="text-center text-gray-400 text-sm py-10">暂无相关服务</div>
+          !loading && <div className="text-center text-gray-400 text-sm py-10">
+            暂无结果<br/>
+            <span className="text-xs text-red-300">请检查CSV中目标事项的"发布渠道"列是否包含 {channel}</span>
+          </div>
         )}
         
-        {loading && <div className="text-center text-xs text-blue-600 animate-pulse">正在进行智能分析...</div>}
+        {loading && <div className="text-center text-xs text-blue-600 animate-pulse">AI 思考中...</div>}
 
         <div className="space-y-3">
           {results.map((item, idx) => (
             <div key={idx} className="bg-white border rounded-lg p-3 shadow-sm hover:border-blue-400 transition relative overflow-hidden group">
               {/* 顶部标签 */}
               <div className="absolute top-0 right-0 flex">
-                 {/* 只有当真的非常精准时才显示“AI强推荐” */}
-                 {item.totalScore > 1200 && (
-                   <span className="px-2 py-0.5 text-[10px] font-bold bg-green-100 text-green-700 rounded-bl-lg">精准推荐</span>
+                 {item.actionBonus > 500 && (
+                   <span className="px-2 py-0.5 text-[10px] font-bold bg-pink-100 text-pink-700 rounded-bl-lg">口语命中</span>
                  )}
-                 {item.isLocValid && !item.totalScore > 1200 && (
-                   <span className="px-2 py-0.5 text-[10px] font-bold bg-blue-50 text-blue-600 rounded-bl-lg">本地</span>
+                 {item.totalScore > 1200 && !item.actionBonus > 500 && (
+                   <span className="px-2 py-0.5 text-[10px] font-bold bg-green-100 text-green-700 rounded-bl-lg">AI推荐</span>
                  )}
               </div>
 
@@ -306,10 +313,17 @@ export default function Home() {
                    <Building2 className="w-3 h-3"/> {item['所属市州单位']}
                 </span>
 
-                {/* 调试：显示动词命中 */}
-                {item.actionBonus > 0 && (
-                   <span className="px-2 py-0.5 rounded bg-pink-50 text-pink-700 text-[10px] border border-pink-100">
-                     动作匹配
+                {/* 调试：显示命中关键词 */}
+                {item.hitKeyword && (
+                   <span className="px-2 py-0.5 rounded bg-yellow-50 text-yellow-700 text-[10px] border border-yellow-100">
+                     {item.hitKeyword}
+                   </span>
+                )}
+                
+                {/* 调试：低分警告 */}
+                {item.totalScore < 100 && (
+                   <span className="px-2 py-0.5 rounded bg-gray-200 text-gray-500 text-[10px] flex items-center gap-1">
+                     <AlertTriangle className="w-3 h-3"/> 低分({item.totalScore.toFixed(0)})
                    </span>
                 )}
               </div>
@@ -325,7 +339,7 @@ export default function Home() {
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleSearch()}
-            placeholder="搜服务 (如: 身份证改名)..." 
+            placeholder="搜服务 (如: 身份证坏了)..." 
             className="flex-1 p-3 bg-gray-100 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
           />
           <button onClick={handleSearch} disabled={loading} className="bg-blue-600 text-white px-6 rounded-xl font-bold text-sm min-w-[80px] active:scale-95 transition">
