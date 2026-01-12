@@ -7,10 +7,16 @@ import { Upload, Search, Settings, User, Zap, Save, AlertCircle } from 'lucide-r
 // 预设的一些模型配置，方便你演示时一键切换
 const PRESETS = {
   groq: {
-    name: 'Groq',
+    name: 'Groq (极速/推荐)',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    model: 'llama3-70b-8192',
+    note: '速度最快，演示首选'
+  },
+  glm: {
+    name: 'GLM',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
     model: 'glm-4.5-flash',
-    note: '速度最快，演示首选'
+    note: '智普清言'
   },
   deepseek: {
     name: 'DeepSeek',
