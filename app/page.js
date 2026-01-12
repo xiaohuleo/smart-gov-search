@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Papa from 'papaparse';
-import { Upload, Settings, Zap, Save, MapPin, Briefcase, Building2, Terminal } from 'lucide-react';
+import { Upload, Settings, Zap, Save, MapPin, Briefcase, Building2, Search } from 'lucide-react';
 
 const PRESETS = {
   groq: { name: 'Groq (极速)', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama3-8b-8192' },
@@ -15,9 +15,9 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
   const [searchTime, setSearchTime] = useState(0);
-  const [logs, setLogs] = useState(['系统就绪']);
+  const [logs, setLogs] = useState(['等待指令...']);
   
-  const addLog = (msg) => setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
+  const addLog = (msg) => setLogs(prev => [`${msg}`, ...prev]);
 
   // 上下文
   const [query, setQuery] = useState('');
@@ -51,7 +51,7 @@ export default function Home() {
       skipEmptyLines: true,
       complete: (res) => {
         setCsvData(res.data);
-        addLog(`导入数据: ${res.data.length} 条`);
+        addLog(`数据导入: ${res.data.length} 条`);
         alert(`成功导入 ${res.data.length} 条数据`);
       }
     });
@@ -65,7 +65,7 @@ export default function Home() {
     setLoading(true);
     setResults([]);
     const startTime = performance.now();
-    addLog(`开始搜索: "${query}"`);
+    addLog(`🔍 搜索: "${query}"`);
 
     try {
       // 1. 渠道过滤
@@ -76,16 +76,15 @@ export default function Home() {
         return channels.length === 0 || channels.includes(userChannel);
       });
 
-      // 2. 构建 Payload (关键修改：增加描述字段)
-      // 把描述发给AI，能极大提升对“遗失”和“换领”的区分度
+      // 2. 准备 Payload
       const candidates = channelFiltered.slice(0, 40).map(item => ({
         id: item['事项编码'],
         n: item['事项名称'],
-        d: (item['事项描述'] || "").substring(0, 50) // 截取前50字节省流量
+        d: (item['事项描述'] || "").substring(0, 50)
       }));
 
-      // 3. 请求 API
-      addLog('正在进行语义判别...');
+      // 3. 请求 AI
+      addLog('🤖 AI 语义分析中...');
       const response = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -94,35 +93,47 @@ export default function Home() {
 
       const data = await response.json();
       const aiScoresMap = data.scores || {};
-      addLog('AI 判别完成');
+      addLog('✅ AI 分析完成');
 
-      // 4. 计算总分
+      // 4. 混合排序算法 V10 (双重锚点)
       const finalResults = channelFiltered.map(item => {
         const code = item['事项编码'];
+        const name = item['事项名称'];
         const aiScore = aiScoresMap[code] || 0;
         
-        // 放大倍数：将 AI 分数差距拉大
-        // 如果 AI 给了 0.9，这里就是 900 分；如果给了 0.5，就是 500 分
-        // 差距 400 分足够抵消任何高频或满意度的加分
+        // --- A. AI 基准分 (0-1000分) ---
         let totalScore = aiScore * 1000; 
 
+        // --- B. 关键词硬锚点 (Keyword Anchoring) [核心修复!] ---
+        // 如果用户搜"姓名"，事项里也有"姓名"，直接加 500 分！
+        // 这能强制把"姓名变更"拉到"住址变更"前面
+        let keywordBonus = 0;
+        const keyTerms = ["姓名", "住址", "民族", "丢失", "遗失", "补领", "换领", "有效期"]; // 关键政务词库
+        
+        keyTerms.forEach(term => {
+            if (query.includes(term) && name.includes(term)) {
+                keywordBonus += 500; 
+            }
+        });
+        totalScore += keywordBonus;
+
+        // --- C. 角色 & 定位 ---
         const itemTargets = (item['服务对象'] || "").split(/[,，;]/).map(t => t.trim());
         const isRoleMatch = itemTargets.some(t => t.includes(userRole)) || itemTargets.some(t => t.includes(userRole === '自然人' ? '个人' : '企业'));
         
         const itemDept = item['所属市州单位'] || "";
         const isLocValid = itemDept.includes(location) || itemDept.includes('省') || itemDept.includes('中央') || itemDept.includes('国家');
 
-        // 扣分
-        if (!isRoleMatch) totalScore -= 200; // 角色不对扣重一点
-        if (!isLocValid) totalScore -= 400; // 外地事项扣重一点
+        if (!isRoleMatch) totalScore -= 300; 
+        if (!isLocValid) totalScore -= 500;
 
-        // 加分 (权重降低，防止干扰主语义)
+        // --- D. 附加 ---
         if (item['是否高频事项'] === '是') totalScore += 20; 
-        if (useSatisfaction && item['满意度']) totalScore += parseFloat(item['满意度']) * 2;
 
         return {
           ...item,
           aiScore,
+          keywordBonus,
           isRoleMatch,
           isLocValid,
           totalScore
@@ -135,7 +146,7 @@ export default function Home() {
 
     } catch (error) {
       console.error(error);
-      addLog(`错误: ${error.message}`);
+      addLog(`❌ 错误: ${error.message}`);
       alert('搜索出错: ' + error.message);
     } finally {
       const endTime = performance.now();
@@ -149,16 +160,16 @@ export default function Home() {
       {/* 顶部栏 */}
       <div className="bg-slate-900 text-white p-4 flex justify-between items-center sticky top-0 z-20 shadow-md">
         <div>
-          <h1 className="font-bold text-lg">政务搜索 V9.0 (精准修正)</h1>
-          <p className="text-xs text-slate-400">强化“动作”识别 | 抑制高频干扰</p>
+          <h1 className="font-bold text-lg">政务搜索 V10.0 (终极版)</h1>
+          <p className="text-xs text-slate-400">双重锚点技术 | 关键词强制对齐</p>
         </div>
         <button onClick={() => setConfigOpen(!configOpen)} className="p-2 hover:bg-slate-700 rounded-full">
           <Settings className="w-5 h-5" />
         </button>
       </div>
 
-      {/* 简易日志 */}
-      <div className="bg-black text-green-400 p-1 text-[10px] font-mono h-20 overflow-y-auto">
+      {/* 日志 */}
+      <div className="bg-black text-green-400 p-2 text-[10px] font-mono h-20 overflow-y-auto">
         {logs.map((log, i) => <div key={i}>{log}</div>)}
       </div>
 
@@ -217,7 +228,6 @@ export default function Home() {
             <MapPin className="absolute left-2 top-2.5 w-4 h-4 text-gray-400" />
             <input type="text" value={location} onChange={e => setLocation(e.target.value)} className="w-full pl-8 p-2 border rounded text-sm" placeholder="当前定位" />
           </div>
-
           <label className="flex items-center gap-2 text-xs text-gray-600 pt-1 cursor-pointer">
              <input type="checkbox" checked={useSatisfaction} onChange={e => setUseSatisfaction(e.target.checked)} className="rounded text-blue-600"/>
              启用满意度加权
@@ -234,7 +244,7 @@ export default function Home() {
           </div>
         )}
         
-        {loading && <div className="text-center text-xs text-blue-600 animate-pulse">AI 思考中...</div>}
+        {loading && <div className="text-center text-xs text-blue-600 animate-pulse">正在智能分析...</div>}
 
         <div className="space-y-3">
           {results.map((item, idx) => (
@@ -256,15 +266,17 @@ export default function Home() {
                    <Building2 className="w-3 h-3"/> {item['所属市州单位']}
                 </span>
                 
-                {/* 重点显示 AI 分数 */}
-                <span className={`px-2 py-0.5 rounded text-[10px] border ${item.aiScore > 0.8 ? 'bg-green-50 text-green-700 border-green-200' : 'bg-gray-50 text-gray-500'}`}>
-                   AI:{item.aiScore.toFixed(2)}
-                </span>
-              </div>
-              
-              {/* 调试信息 */}
-              <div className="mt-2 text-[9px] text-gray-300 font-mono">
-                 {(item['事项描述'] || "").substring(0, 30)}...
+                {item.keywordBonus > 0 && (
+                   <span className="px-2 py-0.5 rounded bg-pink-50 text-pink-700 text-[10px] border border-pink-100 flex items-center gap-1">
+                     <Search className="w-3 h-3"/> 关键词命中
+                   </span>
+                )}
+
+                {item.aiScore > 0.8 && (
+                   <span className="px-2 py-0.5 rounded bg-green-50 text-green-700 text-[10px] border border-green-200">
+                     AI强推荐
+                   </span>
+                )}
               </div>
             </div>
           ))}
@@ -278,7 +290,7 @@ export default function Home() {
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleSearch()}
-            placeholder="搜服务..." 
+            placeholder="请输入您的需求..." 
             className="flex-1 p-3 bg-gray-100 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
           />
           <button onClick={handleSearch} disabled={loading} className="bg-blue-600 text-white px-6 rounded-xl font-bold text-sm min-w-[80px] active:scale-95 transition">
