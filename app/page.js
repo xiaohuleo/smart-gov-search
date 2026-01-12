@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Papa from 'papaparse';
-import { Upload, Settings, Zap, Save, MapPin, Briefcase, Building2 } from 'lucide-react';
+import { Upload, Settings, Zap, Save, MapPin, Briefcase, Building2, Terminal } from 'lucide-react';
 
 const PRESETS = {
   groq: { name: 'Groq (极速)', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama3-8b-8192' },
@@ -15,8 +15,16 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
   const [searchTime, setSearchTime] = useState(0);
-  const [debugMsg, setDebugMsg] = useState('');
   
+  // 屏幕日志系统 (用于诊断问题)
+  const [logs, setLogs] = useState(['等待操作...']);
+  
+  const addLog = (msg) => {
+    const time = new Date().toLocaleTimeString();
+    setLogs(prev => [`[${time}] ${msg}`, ...prev]);
+    console.log(`[${time}] ${msg}`);
+  };
+
   // 上下文
   const [query, setQuery] = useState('');
   const [userRole, setUserRole] = useState('自然人');
@@ -39,42 +47,72 @@ export default function Home() {
     localStorage.setItem('gov_search_api_key', apiConfig.apiKey);
     localStorage.setItem('gov_search_base_url', apiConfig.baseUrl);
     setConfigOpen(false);
+    addLog('配置已保存到本地');
     alert('配置已保存');
   };
 
   const handleFileUpload = (event) => {
     const file = event.target.files[0];
     if (!file) return;
+    addLog(`正在读取文件: ${file.name}`);
+    
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
       complete: (res) => {
         setCsvData(res.data);
+        addLog(`CSV读取成功: 获取到 ${res.data.length} 条数据`);
         alert(`成功导入 ${res.data.length} 条数据`);
+      },
+      error: (err) => {
+        addLog(`CSV读取失败: ${err.message}`);
+        alert('CSV读取失败');
       }
     });
   };
 
+  // 核心搜索逻辑 (增加详细诊断)
   const handleSearch = async () => {
-    if (!apiConfig.apiKey) return alert('请先配置 API Key');
-    if (csvData.length === 0) return alert('请先导入 CSV');
-    if (!query.trim()) return alert('请输入搜索词');
+    addLog('>>> 开始搜索流程');
+    
+    // 1. 基础检查
+    if (!apiConfig.apiKey) {
+      addLog('错误: 未配置 API Key');
+      return alert('请先配置 API Key');
+    }
+    if (csvData.length === 0) {
+      addLog('错误: CSV 数据为空');
+      return alert('请先导入 CSV');
+    }
+    if (!query.trim()) {
+      addLog('错误: 搜索词为空');
+      return alert('请输入搜索词');
+    }
 
     setLoading(true);
     setResults([]);
     const startTime = performance.now();
 
     try {
-      // 1. 渠道过滤
+      // 2. 渠道过滤
+      addLog(`正在执行渠道过滤 (当前设备: ${channel})`);
       const channelFiltered = csvData.filter(item => {
         const itemChannels = item['发布渠道'] || "";
         const channels = itemChannels.split(/[,，;]/).map(c => c.trim().toUpperCase());
         const userChannel = channel.toUpperCase();
+        // 如果数据没填渠道，默认显示；否则必须包含当前渠道
         return channels.length === 0 || channels.includes(userChannel);
       });
+      addLog(`渠道过滤后剩余: ${channelFiltered.length} 条`);
 
-      // 2. AI 意图识别
-      setDebugMsg('AI 正在理解意图...');
+      if (channelFiltered.length === 0) {
+        addLog('警告: 当前设备渠道下没有可展示的事项，流程终止');
+        setLoading(false);
+        return;
+      }
+
+      // 3. AI 意图识别
+      addLog('正在请求后端 API 进行语义分析...');
       const candidates = channelFiltered.slice(0, 50).map(item => ({
         id: item['事项编码'],
         n: item['事项名称']
@@ -86,17 +124,20 @@ export default function Home() {
         body: JSON.stringify({ query, candidates, config: apiConfig })
       });
 
+      addLog(`后端响应状态码: ${response.status}`);
+      
       const data = await response.json();
       
-      // 修复：增加错误检查，防止静默失败
       if (data.error) {
-        throw new Error(`AI 服务报错: ${data.error}`);
+        throw new Error(`API报错: ${data.error}`);
       }
       
       const aiScoresMap = data.scores || {};
+      const scoreKeys = Object.keys(aiScoresMap);
+      addLog(`AI评分完成，获取到 ${scoreKeys.length} 个评分结果`);
 
-      // 3. 排序逻辑
-      setDebugMsg('正在进行多维排序...');
+      // 4. 排序逻辑
+      addLog('正在计算最终权重...');
       
       const finalResults = channelFiltered.map(item => {
         const code = item['事项编码'];
@@ -127,34 +168,45 @@ export default function Home() {
         };
       });
 
-      const sorted = finalResults
-        .filter(i => i.totalScore > 10)
-        .sort((a, b) => b.totalScore - a.totalScore);
-
+      // 排序 - 移除过滤门槛，确保有结果显示
+      const sorted = finalResults.sort((a, b) => b.totalScore - a.totalScore);
+      
+      addLog(`排序完成，准备展示 ${sorted.length} 条结果`);
       setResults(sorted);
 
     } catch (error) {
-      console.error(error);
+      addLog(`!!! 发生异常: ${error.message}`);
       alert('搜索中断: ' + error.message);
+      console.error(error);
     } finally {
       const endTime = performance.now();
       setSearchTime(((endTime - startTime) / 1000).toFixed(2));
       setLoading(false);
-      setDebugMsg('');
+      addLog('>>> 流程结束');
     }
   };
 
   return (
-    <div className="max-w-2xl mx-auto min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
+    <div className="max-w-2xl mx-auto min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800 pb-32">
       {/* 顶部栏 */}
       <div className="bg-slate-900 text-white p-4 flex justify-between items-center sticky top-0 z-20 shadow-md">
         <div>
-          <h1 className="font-bold text-lg">政务搜索 V7.1 (稳定版)</h1>
-          <p className="text-xs text-slate-400">意图优先 | 逻辑修复 | 鲁棒性增强</p>
+          <h1 className="font-bold text-lg">政务搜索 V8.0 (诊断版)</h1>
+          <p className="text-xs text-slate-400">已启用全链路日志</p>
         </div>
         <button onClick={() => setConfigOpen(!configOpen)} className="p-2 hover:bg-slate-700 rounded-full">
           <Settings className="w-5 h-5" />
         </button>
+      </div>
+
+      {/* 诊断日志面板 (新增) */}
+      <div className="bg-black text-green-400 p-2 text-[10px] font-mono h-32 overflow-y-auto border-b border-gray-700">
+        <div className="flex items-center gap-2 mb-1 text-white font-bold border-b border-gray-800 pb-1">
+          <Terminal className="w-3 h-3" /> 系统日志 (Debug Log)
+        </div>
+        {logs.map((log, i) => (
+          <div key={i} className="whitespace-nowrap">{log}</div>
+        ))}
       </div>
 
       {/* 配置面板 */}
@@ -229,9 +281,9 @@ export default function Home() {
           </div>
         )}
         
-        {loading && <div className="text-center text-xs text-blue-600 animate-pulse">{debugMsg}</div>}
+        {loading && <div className="text-center text-xs text-blue-600 animate-pulse">正在处理中...</div>}
 
-        <div className="space-y-3 pb-20">
+        <div className="space-y-3">
           {results.map((item, idx) => (
             <div key={idx} className="bg-white border rounded-lg p-3 shadow-sm hover:border-blue-400 transition relative overflow-hidden group">
               <div className="absolute top-0 right-0 flex">
@@ -256,6 +308,10 @@ export default function Home() {
                      语义{Math.round(item.aiScore*100)}
                    </span>
                 )}
+              </div>
+              
+              <div className="mt-2 pt-2 border-t border-dashed border-gray-100 text-[9px] text-gray-400 font-mono">
+                总分: {item.totalScore.toFixed(0)} | AI:{item.aiScore.toFixed(2)}
               </div>
             </div>
           ))}
