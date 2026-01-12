@@ -8,15 +8,20 @@ export async function POST(req) {
 
     if (!config.apiKey) return NextResponse.json({ error: "配置缺失" }, { status: 400 });
 
-    // 优化提示词：要求 AI 拉开分差
-    const systemPrompt = `你是一个政务搜索评分专家。用户搜索: "${query}"。
-    请判断以下候选事项与搜索意图的相关性 (0.00 - 1.00)。
+    // 关键修改：System Prompt 只关注语义
+    const systemPrompt = `你是一个政务服务意图识别引擎。
+    用户搜索: "${query}"。
+    请判断候选事项名称与搜索意图的【语义相关性】(0.0-1.0)。
+    
     评分标准：
-    - 核心意图完全匹配 (如搜"生孩子"出"出生证"): > 0.9
-    - 意图相关 (如搜"生孩子"出"医保"): 0.5 - 0.8
-    - 仅字面相关但意图不符: < 0.3
-    - 完全无关: 0.0
-    必须返回 JSON: {"scores": {"编码": 0.95}}。`;
+    - 1.0: 完美匹配 (如搜"身份证"出"居民身份证申领")
+    - 0.8: 强相关 (如搜"生孩子"出"生育登记"、"医保")
+    - 0.5: 弱相关 (包含关键词但意图不同，如搜"身份证"出"临时身份证")
+    - 0.1: 仅字面重合 (如搜"企业"出"企业公园年票")
+    - 0.0: 无关
+    
+    注意：只判断文本意图，【不要】考虑用户所在地或角色，这交给其他系统处理。
+    返回 JSON: {"scores": {"ID": 0.9}}`;
 
     const apiUrl = `${config.baseUrl.replace(/\/$/, '')}/chat/completions`;
 
@@ -32,7 +37,7 @@ export async function POST(req) {
           { role: "system", content: systemPrompt },
           { role: "user", content: JSON.stringify(candidates) }
         ],
-        temperature: 0.0, // 0温度确保结果最稳定
+        temperature: 0.0,
         response_format: { type: "json_object" }
       })
     });
@@ -44,11 +49,9 @@ export async function POST(req) {
     
     let scores = {};
     try {
-      const parsed = JSON.parse(cleanContent);
+      const parsed = JSON.parse(content);
       scores = parsed.scores || parsed;
-    } catch (e) {
-      // 容错处理
-    }
+    } catch (e) {}
 
     return NextResponse.json({ scores });
 
