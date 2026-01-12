@@ -8,20 +8,16 @@ export async function POST(req) {
 
     if (!config.apiKey) return NextResponse.json({ error: "配置缺失" }, { status: 400 });
 
-    const systemPrompt = `你是一个政务搜索专家。用户搜索: "${query}"。
-    请对候选事项进行评分(0.0-1.0)。
+    const systemPrompt = `你是一个严厉的政务意图识别引擎。用户搜索: "${query}"。
+    请判断候选事项与意图的相关性 (0.0 - 1.0)。
     
-    【核心原则：属性严格对齐】
-    1. 用户如果指明了"姓名"，则只有处理"姓名"的事项能得高分。处理"住址"的事项得分必须低于 0.3。
-    2. 用户如果指明了"丢了/补领"，则只有"补领"类事项得高分。"换领"类事项得分必须低于 0.5。
-    
-    【示例】
-    用户: "身份证姓名错了"
-    - "居民身份证姓名变更": 1.0 (完美)
-    - "居民身份证住址变更": 0.2 (属性不符)
-    - "居民身份证遗失补领": 0.1 (意图不符)
-    
-    返回 JSON: {"scores": {"ID": 0.9}}`;
+    【判分标准】
+    1. **完全无关 (0.0)**: 如搜"身份证"遇到"血压管理"、"疫苗"。必须给 0.0！
+    2. **动作不符 (0.2)**: 搜"改名"遇到"查询"。虽然名词对，但动作不对，低分。
+    3. **相关 (0.5)**: 泛泛的相关。
+    4. **精准 (1.0)**: 名词和动作都完美匹配。
+
+    返回 JSON: {"scores": {"CODE": 0.0}}`;
 
     const apiUrl = `${config.baseUrl.replace(/\/$/, '')}/chat/completions`;
 
@@ -59,7 +55,6 @@ export async function POST(req) {
       let cleanContent = rawContent.replace(/```json/g, '').replace(/```/g, '').trim();
       const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
       if (jsonMatch) cleanContent = jsonMatch[0];
-      
       const parsed = JSON.parse(cleanContent);
       scores = parsed.scores || parsed;
     } catch (e) {
