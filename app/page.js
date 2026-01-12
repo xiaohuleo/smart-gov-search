@@ -8,8 +8,8 @@ import { Upload, Search, Settings, User, Zap, Save, AlertCircle } from 'lucide-r
 const PRESETS = {
   groq: {
     name: 'Groq',
-    baseUrl: 'https://api.groq.com/openai/v1',
-    model: 'llama3-70b-8192',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
+    model: 'glm-4.5-flash',
     note: '速度最快，演示首选'
   },
   deepseek: {
