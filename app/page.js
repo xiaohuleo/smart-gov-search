@@ -15,15 +15,9 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
   const [searchTime, setSearchTime] = useState(0);
+  const [logs, setLogs] = useState(['系统就绪']);
   
-  // 屏幕日志系统 (用于诊断问题)
-  const [logs, setLogs] = useState(['等待操作...']);
-  
-  const addLog = (msg) => {
-    const time = new Date().toLocaleTimeString();
-    setLogs(prev => [`[${time}] ${msg}`, ...prev]);
-    console.log(`[${time}] ${msg}`);
-  };
+  const addLog = (msg) => setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
 
   // 上下文
   const [query, setQuery] = useState('');
@@ -32,7 +26,6 @@ export default function Home() {
   const [channel, setChannel] = useState('IOS');
   const [useSatisfaction, setUseSatisfaction] = useState(false);
   
-  // 配置
   const [configOpen, setConfigOpen] = useState(true);
   const [apiConfig, setApiConfig] = useState({ baseUrl: PRESETS.groq.baseUrl, apiKey: '', model: PRESETS.groq.model });
 
@@ -47,142 +40,107 @@ export default function Home() {
     localStorage.setItem('gov_search_api_key', apiConfig.apiKey);
     localStorage.setItem('gov_search_base_url', apiConfig.baseUrl);
     setConfigOpen(false);
-    addLog('配置已保存到本地');
     alert('配置已保存');
   };
 
   const handleFileUpload = (event) => {
     const file = event.target.files[0];
     if (!file) return;
-    addLog(`正在读取文件: ${file.name}`);
-    
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
       complete: (res) => {
         setCsvData(res.data);
-        addLog(`CSV读取成功: 获取到 ${res.data.length} 条数据`);
+        addLog(`导入数据: ${res.data.length} 条`);
         alert(`成功导入 ${res.data.length} 条数据`);
-      },
-      error: (err) => {
-        addLog(`CSV读取失败: ${err.message}`);
-        alert('CSV读取失败');
       }
     });
   };
 
-  // 核心搜索逻辑 (增加详细诊断)
   const handleSearch = async () => {
-    addLog('>>> 开始搜索流程');
-    
-    // 1. 基础检查
-    if (!apiConfig.apiKey) {
-      addLog('错误: 未配置 API Key');
-      return alert('请先配置 API Key');
-    }
-    if (csvData.length === 0) {
-      addLog('错误: CSV 数据为空');
-      return alert('请先导入 CSV');
-    }
-    if (!query.trim()) {
-      addLog('错误: 搜索词为空');
-      return alert('请输入搜索词');
-    }
+    if (!apiConfig.apiKey) return alert('请先配置 API Key');
+    if (csvData.length === 0) return alert('请先导入 CSV');
+    if (!query.trim()) return alert('请输入搜索词');
 
     setLoading(true);
     setResults([]);
     const startTime = performance.now();
+    addLog(`开始搜索: "${query}"`);
 
     try {
-      // 2. 渠道过滤
-      addLog(`正在执行渠道过滤 (当前设备: ${channel})`);
+      // 1. 渠道过滤
       const channelFiltered = csvData.filter(item => {
         const itemChannels = item['发布渠道'] || "";
         const channels = itemChannels.split(/[,，;]/).map(c => c.trim().toUpperCase());
         const userChannel = channel.toUpperCase();
-        // 如果数据没填渠道，默认显示；否则必须包含当前渠道
         return channels.length === 0 || channels.includes(userChannel);
       });
-      addLog(`渠道过滤后剩余: ${channelFiltered.length} 条`);
 
-      if (channelFiltered.length === 0) {
-        addLog('警告: 当前设备渠道下没有可展示的事项，流程终止');
-        setLoading(false);
-        return;
-      }
-
-      // 3. AI 意图识别
-      addLog('正在请求后端 API 进行语义分析...');
-      const candidates = channelFiltered.slice(0, 50).map(item => ({
+      // 2. 构建 Payload (关键修改：增加描述字段)
+      // 把描述发给AI，能极大提升对“遗失”和“换领”的区分度
+      const candidates = channelFiltered.slice(0, 40).map(item => ({
         id: item['事项编码'],
-        n: item['事项名称']
+        n: item['事项名称'],
+        d: (item['事项描述'] || "").substring(0, 50) // 截取前50字节省流量
       }));
 
+      // 3. 请求 API
+      addLog('正在进行语义判别...');
       const response = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, candidates, config: apiConfig })
       });
 
-      addLog(`后端响应状态码: ${response.status}`);
-      
       const data = await response.json();
-      
-      if (data.error) {
-        throw new Error(`API报错: ${data.error}`);
-      }
-      
       const aiScoresMap = data.scores || {};
-      const scoreKeys = Object.keys(aiScoresMap);
-      addLog(`AI评分完成，获取到 ${scoreKeys.length} 个评分结果`);
+      addLog('AI 判别完成');
 
-      // 4. 排序逻辑
-      addLog('正在计算最终权重...');
-      
+      // 4. 计算总分
       const finalResults = channelFiltered.map(item => {
         const code = item['事项编码'];
-        let totalScore = (aiScoresMap[code] || 0) * 100;
+        const aiScore = aiScoresMap[code] || 0;
         
-        // 角色判断
+        // 放大倍数：将 AI 分数差距拉大
+        // 如果 AI 给了 0.9，这里就是 900 分；如果给了 0.5，就是 500 分
+        // 差距 400 分足够抵消任何高频或满意度的加分
+        let totalScore = aiScore * 1000; 
+
         const itemTargets = (item['服务对象'] || "").split(/[,，;]/).map(t => t.trim());
         const isRoleMatch = itemTargets.some(t => t.includes(userRole)) || itemTargets.some(t => t.includes(userRole === '自然人' ? '个人' : '企业'));
         
-        // 定位判断
         const itemDept = item['所属市州单位'] || "";
         const isLocValid = itemDept.includes(location) || itemDept.includes('省') || itemDept.includes('中央') || itemDept.includes('国家');
 
-        // 扣分逻辑
-        if (!isRoleMatch) totalScore -= 20;
-        if (!isLocValid) totalScore -= 40;
+        // 扣分
+        if (!isRoleMatch) totalScore -= 200; // 角色不对扣重一点
+        if (!isLocValid) totalScore -= 400; // 外地事项扣重一点
 
-        // 加分逻辑
-        if (item['是否高频事项'] === '是') totalScore += 5;
-        if (useSatisfaction && item['满意度']) totalScore += parseFloat(item['满意度']);
+        // 加分 (权重降低，防止干扰主语义)
+        if (item['是否高频事项'] === '是') totalScore += 20; 
+        if (useSatisfaction && item['满意度']) totalScore += parseFloat(item['满意度']) * 2;
 
         return {
           ...item,
-          aiScore: aiScoresMap[code] || 0,
+          aiScore,
           isRoleMatch,
           isLocValid,
           totalScore
         };
       });
 
-      // 排序 - 移除过滤门槛，确保有结果显示
+      // 5. 排序
       const sorted = finalResults.sort((a, b) => b.totalScore - a.totalScore);
-      
-      addLog(`排序完成，准备展示 ${sorted.length} 条结果`);
       setResults(sorted);
 
     } catch (error) {
-      addLog(`!!! 发生异常: ${error.message}`);
-      alert('搜索中断: ' + error.message);
       console.error(error);
+      addLog(`错误: ${error.message}`);
+      alert('搜索出错: ' + error.message);
     } finally {
       const endTime = performance.now();
       setSearchTime(((endTime - startTime) / 1000).toFixed(2));
       setLoading(false);
-      addLog('>>> 流程结束');
     }
   };
 
@@ -191,22 +149,17 @@ export default function Home() {
       {/* 顶部栏 */}
       <div className="bg-slate-900 text-white p-4 flex justify-between items-center sticky top-0 z-20 shadow-md">
         <div>
-          <h1 className="font-bold text-lg">政务搜索 V8.0 (诊断版)</h1>
-          <p className="text-xs text-slate-400">已启用全链路日志</p>
+          <h1 className="font-bold text-lg">政务搜索 V9.0 (精准修正)</h1>
+          <p className="text-xs text-slate-400">强化“动作”识别 | 抑制高频干扰</p>
         </div>
         <button onClick={() => setConfigOpen(!configOpen)} className="p-2 hover:bg-slate-700 rounded-full">
           <Settings className="w-5 h-5" />
         </button>
       </div>
 
-      {/* 诊断日志面板 (新增) */}
-      <div className="bg-black text-green-400 p-2 text-[10px] font-mono h-32 overflow-y-auto border-b border-gray-700">
-        <div className="flex items-center gap-2 mb-1 text-white font-bold border-b border-gray-800 pb-1">
-          <Terminal className="w-3 h-3" /> 系统日志 (Debug Log)
-        </div>
-        {logs.map((log, i) => (
-          <div key={i} className="whitespace-nowrap">{log}</div>
-        ))}
+      {/* 简易日志 */}
+      <div className="bg-black text-green-400 p-1 text-[10px] font-mono h-20 overflow-y-auto">
+        {logs.map((log, i) => <div key={i}>{log}</div>)}
       </div>
 
       {/* 配置面板 */}
@@ -281,7 +234,7 @@ export default function Home() {
           </div>
         )}
         
-        {loading && <div className="text-center text-xs text-blue-600 animate-pulse">正在处理中...</div>}
+        {loading && <div className="text-center text-xs text-blue-600 animate-pulse">AI 思考中...</div>}
 
         <div className="space-y-3">
           {results.map((item, idx) => (
@@ -303,22 +256,21 @@ export default function Home() {
                    <Building2 className="w-3 h-3"/> {item['所属市州单位']}
                 </span>
                 
-                {item.aiScore > 0.8 && (
-                   <span className="px-2 py-0.5 rounded bg-orange-50 text-orange-700 text-[10px] border border-orange-100">
-                     语义{Math.round(item.aiScore*100)}
-                   </span>
-                )}
+                {/* 重点显示 AI 分数 */}
+                <span className={`px-2 py-0.5 rounded text-[10px] border ${item.aiScore > 0.8 ? 'bg-green-50 text-green-700 border-green-200' : 'bg-gray-50 text-gray-500'}`}>
+                   AI:{item.aiScore.toFixed(2)}
+                </span>
               </div>
               
-              <div className="mt-2 pt-2 border-t border-dashed border-gray-100 text-[9px] text-gray-400 font-mono">
-                总分: {item.totalScore.toFixed(0)} | AI:{item.aiScore.toFixed(2)}
+              {/* 调试信息 */}
+              <div className="mt-2 text-[9px] text-gray-300 font-mono">
+                 {(item['事项描述'] || "").substring(0, 30)}...
               </div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* 底部搜索 */}
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t p-4 z-10 max-w-2xl mx-auto shadow-lg">
         <div className="flex gap-2">
           <input 
