@@ -7,25 +7,25 @@ import { Upload, Search, Settings, User, Zap, Save, AlertCircle } from 'lucide-r
 // 预设的一些模型配置，方便你演示时一键切换
 const PRESETS = {
   groq: {
-    name: 'Groq (极速/推荐)',
+    name: 'Groq',
     baseUrl: 'https://api.groq.com/openai/v1',
     model: 'llama3-70b-8192',
     note: '速度最快，演示首选'
   },
   deepseek: {
-    name: 'DeepSeek (国产之光)',
+    name: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com', // 或者是 deepseek 的 openai 兼容地址
     model: 'deepseek-chat',
     note: '中文理解能力极强'
   },
   moonshot: {
-    name: 'Kimi (月之暗面)',
+    name: 'Kimi',
     baseUrl: 'https://api.moonshot.cn/v1',
     model: 'moonshot-v1-8k',
     note: '长文本友好'
   },
   custom: {
-    name: '自定义 (OpenAI格式)',
+    name: '自定义',
     baseUrl: '',
     model: '',
     note: '任意兼容接口'
@@ -42,7 +42,7 @@ export default function Home() {
   // --- 搜索上下文 ---
   const [query, setQuery] = useState('');
   const [userRole, setUserRole] = useState('自然人');
-  const [location, setLocation] = useState('省公安厅');
+  const [location, setLocation] = useState('长沙市');
   const [channel, setChannel] = useState('Android');
   const [useSatisfaction, setUseSatisfaction] = useState(false);
   const [useHotness, setUseHotness] = useState(true);
@@ -221,8 +221,10 @@ export default function Home() {
             </select>
             <select value={channel} onChange={e => setChannel(e.target.value)} className="p-2 border rounded text-sm bg-white">
               <option value="Android">Android</option>
-              <option value="iOS">iOS</option>
-              <option value="Web">Web网页</option>
+              <option value="IOS">IOS</option>
+              <option value="HarmonyOS">HarmonyOS</option>
+              <option value="微信小程序">微信小程序</option>
+              <option value="支付宝小程序">支付宝小程序</option>
             </select>
           </div>
           <input type="text" value={location} onChange={e => setLocation(e.target.value)} className="w-full p-2 border rounded text-sm" placeholder="当前定位，如：长沙市" />
