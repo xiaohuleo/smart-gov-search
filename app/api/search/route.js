@@ -1,26 +1,25 @@
 import { NextResponse } from "next/server";
 
-// 🚀 启用 Edge Runtime，解决冷启动慢的问题
 export const runtime = 'edge';
 
 export async function POST(req) {
   try {
     const { query, candidates, config } = await req.json();
 
-    if (!config.apiKey || !config.baseUrl) {
-      return NextResponse.json({ error: "配置缺失" }, { status: 400 });
-    }
+    if (!config.apiKey) return NextResponse.json({ error: "配置缺失" }, { status: 400 });
 
-    // 构建 Prompt：要求 AI 返回纯 JSON
-    const systemPrompt = `你是一个相关性评分器。用户搜索: "${query}"。
-    请判断以下候选列表(ID和名称)与搜索意图的相关性(0.0-1.0)。
-    必须严格返回 JSON 对象，格式：{"scores": {"编码1": 0.9, "编码2": 0.1}}。
-    不要解释，只要 JSON。`;
+    // 优化提示词：要求 AI 拉开分差
+    const systemPrompt = `你是一个政务搜索评分专家。用户搜索: "${query}"。
+    请判断以下候选事项与搜索意图的相关性 (0.00 - 1.00)。
+    评分标准：
+    - 核心意图完全匹配 (如搜"生孩子"出"出生证"): > 0.9
+    - 意图相关 (如搜"生孩子"出"医保"): 0.5 - 0.8
+    - 仅字面相关但意图不符: < 0.3
+    - 完全无关: 0.0
+    必须返回 JSON: {"scores": {"编码": 0.95}}。`;
 
-    // 拼接 API 地址 (兼容 OpenAI 格式)
     const apiUrl = `${config.baseUrl.replace(/\/$/, '')}/chat/completions`;
 
-    // 后端发起请求 (服务器 -> 服务器，无 CORS 限制)
     const apiRes = await fetch(apiUrl, {
       method: 'POST',
       headers: {
@@ -33,37 +32,22 @@ export async function POST(req) {
           { role: "system", content: systemPrompt },
           { role: "user", content: JSON.stringify(candidates) }
         ],
-        temperature: 0.1, // 低温度保证 JSON 格式稳定
-        response_format: { type: "json_object" } // 尝试强制 JSON
+        temperature: 0.0, // 0温度确保结果最稳定
+        response_format: { type: "json_object" }
       })
     });
 
-    if (!apiRes.ok) {
-      const errText = await apiRes.text();
-      return NextResponse.json({ error: `API Error ${apiRes.status}: ${errText}` }, { status: 500 });
-    }
+    if (!apiRes.ok) throw new Error(apiRes.statusText);
 
     const apiJson = await apiRes.json();
-    const content = apiJson.choices[0].message.content;
-
-    // 清洗和解析 JSON
-    const cleanContent = content.replace(/```json/g, '').replace(/```/g, '').trim();
-    let scores = {};
+    const content = apiJson.choices[0].message.content.replace(/```json/g, '').replace(/```/g, '').trim();
     
+    let scores = {};
     try {
       const parsed = JSON.parse(cleanContent);
-      // 兼容两种返回格式: { "scores": {...} } 或直接 { "id": score }
-      if (parsed.scores) {
-        scores = parsed.scores;
-      } else if (parsed.results) {
-         // 兼容数组格式
-         parsed.results.forEach(r => scores[r.id] = r.s);
-      } else {
-        scores = parsed;
-      }
+      scores = parsed.scores || parsed;
     } catch (e) {
-      console.error("JSON Parse Error", cleanContent);
-      // 如果解析失败，返回空分，前端会依靠硬规则排序
+      // 容错处理
     }
 
     return NextResponse.json({ scores });
