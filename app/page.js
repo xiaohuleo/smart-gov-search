@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Papa from 'papaparse';
-import { Upload, Settings, Zap, Save, MapPin, Briefcase, Building2, Search } from 'lucide-react';
+import { Upload, Settings, Zap, Save, MapPin, Briefcase, Building2, Search, XCircle } from 'lucide-react';
 
 const PRESETS = {
   groq: { name: 'Groq (极速)', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama3-8b-8192' },
@@ -10,12 +10,23 @@ const PRESETS = {
   custom: { name: '自定义', baseUrl: '', model: '' }
 };
 
+// 动词映射表：把用户的口语转换为政务术语
+const VERB_MAPPINGS = {
+  "改": ["变更", "更正", "修改"],
+  "换": ["换领", "更换"],
+  "补": ["补领", "补办", "挂失"],
+  "丢": ["补领", "补办", "遗失", "挂失"],
+  "查": ["查询", "核验", "进度", "打印"],
+  "看": ["查询", "核验", "预览"],
+  "办": ["申领", "办理", "申请"]
+};
+
 export default function Home() {
   const [csvData, setCsvData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
   const [searchTime, setSearchTime] = useState(0);
-  const [logs, setLogs] = useState(['等待指令...']);
+  const [logs, setLogs] = useState(['等待操作...']);
   
   const addLog = (msg) => setLogs(prev => [`${msg}`, ...prev]);
 
@@ -77,14 +88,14 @@ export default function Home() {
       });
 
       // 2. 准备 Payload
-      const candidates = channelFiltered.slice(0, 40).map(item => ({
+      const candidates = channelFiltered.slice(0, 50).map(item => ({
         id: item['事项编码'],
         n: item['事项名称'],
         d: (item['事项描述'] || "").substring(0, 50)
       }));
 
       // 3. 请求 AI
-      addLog('🤖 AI 语义分析中...');
+      addLog('🤖 AI 正在识别动作与意图...');
       const response = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -95,27 +106,40 @@ export default function Home() {
       const aiScoresMap = data.scores || {};
       addLog('✅ AI 分析完成');
 
-      // 4. 混合排序算法 V10 (双重锚点)
+      // 4. V11.0 排序算法：动词锚点 + 噪音熔断
       const finalResults = channelFiltered.map(item => {
         const code = item['事项编码'];
         const name = item['事项名称'];
         const aiScore = aiScoresMap[code] || 0;
         
-        // --- A. AI 基准分 (0-1000分) ---
+        // --- A. AI 基准分 (0-1000) ---
+        // 放大差距：高分(0.9)得900，低分(0.1)得100
         let totalScore = aiScore * 1000; 
 
-        // --- B. 关键词硬锚点 (Keyword Anchoring) [核心修复!] ---
-        // 如果用户搜"姓名"，事项里也有"姓名"，直接加 500 分！
-        // 这能强制把"姓名变更"拉到"住址变更"前面
-        let keywordBonus = 0;
-        const keyTerms = ["姓名", "住址", "民族", "丢失", "遗失", "补领", "换领", "有效期"]; // 关键政务词库
-        
-        keyTerms.forEach(term => {
-            if (query.includes(term) && name.includes(term)) {
-                keywordBonus += 500; 
+        // --- B. 动词精准锚点 (Verb Anchoring) [关键修复] ---
+        let actionBonus = 0;
+        let isActionMatch = false;
+
+        // 遍历映射表，看用户是否说了某个“口语动词”
+        Object.keys(VERB_MAPPINGS).forEach(userVerb => {
+          if (query.includes(userVerb)) {
+            // 如果用户说了“改”，我们检查服务名称里有没有“变更”、“修改”
+            const officialVerbs = VERB_MAPPINGS[userVerb];
+            const hasOfficialVerb = officialVerbs.some(v => name.includes(v));
+            
+            if (hasOfficialVerb) {
+              actionBonus = 800; // 巨大的加分！
+              isActionMatch = true;
             }
+          }
         });
-        totalScore += keywordBonus;
+        
+        // 如果没有动词匹配，但有核心名词匹配，给少量分
+        if (!isActionMatch && (query.includes("姓名") && name.includes("姓名"))) {
+           actionBonus += 100;
+        }
+
+        totalScore += actionBonus;
 
         // --- C. 角色 & 定位 ---
         const itemTargets = (item['服务对象'] || "").split(/[,，;]/).map(t => t.trim());
@@ -124,30 +148,42 @@ export default function Home() {
         const itemDept = item['所属市州单位'] || "";
         const isLocValid = itemDept.includes(location) || itemDept.includes('省') || itemDept.includes('中央') || itemDept.includes('国家');
 
-        if (!isRoleMatch) totalScore -= 300; 
-        if (!isLocValid) totalScore -= 500;
+        if (!isRoleMatch) totalScore -= 500; // 角色不对直接沉底
+        if (!isLocValid) totalScore -= 500;  // 外地直接沉底
 
         // --- D. 附加 ---
-        if (item['是否高频事项'] === '是') totalScore += 20; 
+        if (item['是否高频事项'] === '是') totalScore += 50; 
+        if (useSatisfaction && item['满意度']) totalScore += parseFloat(item['满意度']) * 5;
 
         return {
           ...item,
           aiScore,
-          keywordBonus,
+          actionBonus,
           isRoleMatch,
           isLocValid,
           totalScore
         };
       });
 
-      // 5. 排序
-      const sorted = finalResults.sort((a, b) => b.totalScore - a.totalScore);
+      // 5. 排序与熔断 (Cut-off)
+      const sorted = finalResults
+        .filter(item => {
+          // 熔断机制：只显示有一定相关性的结果
+          // 门槛：AI分 > 0.3 (弱相关) 或者 有动作匹配加分
+          const isValid = item.aiScore > 0.2 || item.actionBonus > 100;
+          if (!isValid) {
+             // 可以在这里打印被过滤掉的项用于调试
+             // console.log("过滤掉:", item['事项名称'], item.totalScore);
+          }
+          return isValid;
+        })
+        .sort((a, b) => b.totalScore - a.totalScore);
+
       setResults(sorted);
 
     } catch (error) {
       console.error(error);
       addLog(`❌ 错误: ${error.message}`);
-      alert('搜索出错: ' + error.message);
     } finally {
       const endTime = performance.now();
       setSearchTime(((endTime - startTime) / 1000).toFixed(2));
@@ -160,8 +196,8 @@ export default function Home() {
       {/* 顶部栏 */}
       <div className="bg-slate-900 text-white p-4 flex justify-between items-center sticky top-0 z-20 shadow-md">
         <div>
-          <h1 className="font-bold text-lg">政务搜索 V10.0 (终极版)</h1>
-          <p className="text-xs text-slate-400">双重锚点技术 | 关键词强制对齐</p>
+          <h1 className="font-bold text-lg">政务搜索 V11.0 (洁癖版)</h1>
+          <p className="text-xs text-slate-400">动词锚点 + 噪音熔断过滤</p>
         </div>
         <button onClick={() => setConfigOpen(!configOpen)} className="p-2 hover:bg-slate-700 rounded-full">
           <Settings className="w-5 h-5" />
@@ -198,14 +234,6 @@ export default function Home() {
       <div className="p-4 space-y-4 flex-1">
         {/* 数据源与环境 */}
         <div className="bg-white p-4 rounded-lg border shadow-sm space-y-3">
-          <div className="flex justify-between items-center pb-2 border-b">
-            <span className="text-sm font-bold flex items-center gap-2"><Settings className="w-4 h-4"/> 环境模拟</span>
-            <label className="text-blue-600 text-xs cursor-pointer flex items-center gap-1 hover:underline">
-              <Upload className="w-3 h-3" /> 导入CSV
-              <input type="file" accept=".csv" onChange={handleFileUpload} className="hidden" />
-            </label>
-          </div>
-          
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] text-gray-500 block mb-1">渠道</label>
@@ -223,58 +251,65 @@ export default function Home() {
               </select>
             </div>
           </div>
-          
           <div className="relative">
             <MapPin className="absolute left-2 top-2.5 w-4 h-4 text-gray-400" />
             <input type="text" value={location} onChange={e => setLocation(e.target.value)} className="w-full pl-8 p-2 border rounded text-sm" placeholder="当前定位" />
           </div>
-          <label className="flex items-center gap-2 text-xs text-gray-600 pt-1 cursor-pointer">
-             <input type="checkbox" checked={useSatisfaction} onChange={e => setUseSatisfaction(e.target.checked)} className="rounded text-blue-600"/>
-             启用满意度加权
-          </label>
+           <div className="flex justify-between items-center pt-1">
+            <label className="text-blue-600 text-xs cursor-pointer flex items-center gap-1 hover:underline">
+              <Upload className="w-3 h-3" /> 导入CSV
+              <input type="file" accept=".csv" onChange={handleFileUpload} className="hidden" />
+            </label>
+            <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+               <input type="checkbox" checked={useSatisfaction} onChange={e => setUseSatisfaction(e.target.checked)} className="rounded text-blue-600"/>
+               满意度加权
+            </label>
+          </div>
         </div>
 
         {/* 结果展示 */}
-        {results.length > 0 && (
+        {results.length > 0 ? (
           <div className="text-xs text-gray-500 flex justify-between px-1">
             <span>找到 {results.length} 条</span>
             <span className="text-green-600 font-mono flex items-center gap-1">
               <Zap className="w-3 h-3"/> {searchTime}s
             </span>
           </div>
+        ) : (
+          !loading && <div className="text-center text-gray-400 text-sm py-10">暂无相关服务</div>
         )}
         
-        {loading && <div className="text-center text-xs text-blue-600 animate-pulse">正在智能分析...</div>}
+        {loading && <div className="text-center text-xs text-blue-600 animate-pulse">正在进行智能分析...</div>}
 
         <div className="space-y-3">
           {results.map((item, idx) => (
             <div key={idx} className="bg-white border rounded-lg p-3 shadow-sm hover:border-blue-400 transition relative overflow-hidden group">
+              {/* 顶部标签 */}
               <div className="absolute top-0 right-0 flex">
-                {!item.isLocValid && <span className="px-2 py-0.5 text-[10px] font-bold bg-gray-200 text-gray-500 rounded-bl-lg">外地</span>}
-                {!item.isRoleMatch && <span className="px-2 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-700 rounded-bl-lg ml-px">角色不符</span>}
-                {item.isLocValid && item.isRoleMatch && <span className="px-2 py-0.5 text-[10px] font-bold bg-blue-100 text-blue-700 rounded-bl-lg">精准</span>}
+                 {/* 只有当真的非常精准时才显示“AI强推荐” */}
+                 {item.totalScore > 1200 && (
+                   <span className="px-2 py-0.5 text-[10px] font-bold bg-green-100 text-green-700 rounded-bl-lg">精准推荐</span>
+                 )}
+                 {item.isLocValid && !item.totalScore > 1200 && (
+                   <span className="px-2 py-0.5 text-[10px] font-bold bg-blue-50 text-blue-600 rounded-bl-lg">本地</span>
+                 )}
               </div>
 
               <h3 className="font-bold text-gray-800 text-sm pr-20">{item['事项名称']}</h3>
               
               <div className="flex flex-wrap gap-2 mt-2 items-center">
-                <span className={`px-2 py-0.5 rounded text-[10px] flex items-center gap-1 ${item.isRoleMatch ? 'bg-gray-100 text-gray-600' : 'bg-amber-50 text-amber-600 line-through decoration-amber-600'}`}>
+                <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-600 text-[10px] flex items-center gap-1">
                    <Briefcase className="w-3 h-3"/> {item['服务对象']}
                 </span>
                 
                 <span className={`px-2 py-0.5 rounded text-[10px] flex items-center gap-1 ${item['所属市州单位'].includes('省') ? 'bg-purple-50 text-purple-700 font-medium' : 'bg-gray-100 text-gray-600'}`}>
                    <Building2 className="w-3 h-3"/> {item['所属市州单位']}
                 </span>
-                
-                {item.keywordBonus > 0 && (
-                   <span className="px-2 py-0.5 rounded bg-pink-50 text-pink-700 text-[10px] border border-pink-100 flex items-center gap-1">
-                     <Search className="w-3 h-3"/> 关键词命中
-                   </span>
-                )}
 
-                {item.aiScore > 0.8 && (
-                   <span className="px-2 py-0.5 rounded bg-green-50 text-green-700 text-[10px] border border-green-200">
-                     AI强推荐
+                {/* 调试：显示动词命中 */}
+                {item.actionBonus > 0 && (
+                   <span className="px-2 py-0.5 rounded bg-pink-50 text-pink-700 text-[10px] border border-pink-100">
+                     动作匹配
                    </span>
                 )}
               </div>
@@ -290,7 +325,7 @@ export default function Home() {
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleSearch()}
-            placeholder="请输入您的需求..." 
+            placeholder="搜服务 (如: 身份证改名)..." 
             className="flex-1 p-3 bg-gray-100 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
           />
           <button onClick={handleSearch} disabled={loading} className="bg-blue-600 text-white px-6 rounded-xl font-bold text-sm min-w-[80px] active:scale-95 transition">
