@@ -5,7 +5,7 @@ import Papa from 'papaparse';
 import { Upload, Settings, Zap, Save, MapPin, Briefcase, Building2, Search, AlertTriangle } from 'lucide-react';
 
 const PRESETS = {
-  groq: { name: 'Groq (极速)', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama3-8b-8192' },
+  groq: { name: 'Groq (极速)', baseUrl: 'https://api.groq.com/openai/v1', model: 'meta-llama/llama-4-scout-17b-16e-instruct' },
   deepseek: { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
   custom: { name: '自定义', baseUrl: '', model: '' }
 };
