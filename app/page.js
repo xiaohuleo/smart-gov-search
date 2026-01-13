@@ -10,34 +10,43 @@ const PRESETS = {
   custom: { name: '自定义', baseUrl: '', model: '' }
 };
 
+// 1. 核心实体库 (强过滤)
+// 只要搜索词包含这些词，结果必须包含该词(或其核心映射)，否则直接过滤
 const CORE_ENTITIES = [
   "身份证", "社保", "医保", "公积金", "护照", "户口", "居住证", 
   "驾照", "行驶证", "营业执照", "出生证", "结婚证", "离婚证",
-  "普通话", "不动产", "房产"
+  "普通话", "不动产", "房产", "健康", "疫苗", "档案"
 ];
 
+// 2. 政务词典 (解决俗称问题)
 const GOV_THESAURUS = {
+  // --- 重点修复：健康证 ---
+  // 官方名称通常不叫健康证，叫"从业人员...检查"
+  "健康证": ["从业人员", "预防性", "体检", "健康检查", "健康证明"],
+  "健康": ["卫生", "医疗", "预防", "体检", "从业"],
+  
+  // --- 学习/技术 ---
   "技术": ["技能", "职业", "工种", "资格", "培训", "技师"],
   "学": ["培训", "教育", "学校", "技能", "课程", "学习", "人员"],
   "考": ["考试", "成绩", "笔试", "面试", "资格", "证书"],
+  
+  // --- 证照 ---
   "证": ["证书", "执照", "证明", "资格"],
-  "医生": ["医师", "医疗", "行医"],
-  "大夫": ["医师"],
-  "医院": ["医疗机构", "卫生院"],
+  "照": ["执照", "证书"],
+  
+  // --- 动作 ---
   "开店": ["设立", "准营", "经营", "许可", "注册", "个体"],
   "公司": ["企业", "法人", "市场主体"],
   "坏": ["损坏", "换领", "更换", "失效"],
-  "烂": ["损坏", "换领"],
   "旧": ["到期", "换领", "有效期"],
   "改": ["变更", "更正", "修改", "维护"],
-  "错": ["变更", "更正"],
   "丢": ["补领", "补办", "遗失", "挂失"],
-  "弄丢": ["补领", "补办", "遗失", "挂失"],
   "查": ["查询", "核验", "进度", "打印", "档案", "信息"],
   "办": ["申领", "办理", "申请", "注册", "登记"]
 };
 
-const NOISE_WORDS = ["我想", "我要", "想", "要", "怎么", "如何", "去哪里", "办理", "的", "一下", "服务", "弄", "点", "新"];
+// 噪音词
+const NOISE_WORDS = ["我想", "我要", "想", "要", "怎么", "如何", "去哪里", "办理", "的", "一下", "服务", "弄", "点", "吗"];
 
 export default function Home() {
   const [csvData, setCsvData] = useState([]);
@@ -123,7 +132,7 @@ export default function Home() {
         return channels.length === 0 || channels.includes(userChannel);
       });
 
-      // 3. 实体锁定
+      // 3. 实体锁定 (Entity Locking) V21.0 增强
       let lockedEntity = null;
       CORE_ENTITIES.forEach(entity => {
         if (cleanQuery.includes(entity)) lockedEntity = entity;
@@ -132,7 +141,26 @@ export default function Home() {
       let entityFiltered = channelFiltered;
       if (lockedEntity) {
         addLog(`🔒 实体锁定: "${lockedEntity}"`);
-        entityFiltered = channelFiltered.filter(item => item['事项名称'].includes(lockedEntity));
+        // 关键逻辑：如果锁定了实体，结果必须包含实体名，或者包含实体的核心别名
+        // 例如：锁定"健康"，则结果必须包含"健康" OR 包含 "从业人员" (健康证的别名)
+        entityFiltered = channelFiltered.filter(item => {
+            const name = item['事项名称'];
+            // 1. 直接包含实体词
+            if (name.includes(lockedEntity)) return true;
+            
+            // 2. 或者包含实体词的强映射 (Alias)
+            // 比如 lockedEntity="健康证"，允许包含 "从业人员" 或 "体检"
+            // 注意：这里需要去 GOV_THESAURUS 找 lockedEntity 的映射
+            let hasAlias = false;
+            // 尝试查找 lockedEntity 是否在字典中有定义
+            // 也要处理 lockedEntity 是 "健康" 的情况
+            const aliases = GOV_THESAURUS[lockedEntity] || []; 
+            if (aliases.length > 0) {
+                hasAlias = aliases.some(alias => name.includes(alias));
+            }
+            return hasAlias;
+        });
+        addLog(`实体过滤后剩余: ${entityFiltered.length} 条`);
       }
 
       // 4. AI Payload
@@ -157,43 +185,38 @@ export default function Home() {
         addLog('AI超时，使用规则兜底');
       }
 
-      // 6. 评分逻辑 V20.0
+      // 6. 评分逻辑
       const finalResults = entityFiltered.map(item => {
         const code = item['事项编码'];
         const name = item['事项名称'];
         const aiScore = aiScoresMap[code] || 0;
         
-        // V20: 提高 AI 权重，让整体语义理解更好的排前面
         let totalScore = aiScore * 2000; 
         let matchReason = "";
         let translatedWord = "";
 
         // A. 实体锁定奖励
-        if (lockedEntity && name.includes(lockedEntity)) {
-            totalScore += 2000;
+        if (lockedEntity && (name.includes(lockedEntity) || (GOV_THESAURUS[lockedEntity]||[]).some(a => name.includes(a)))) {
+            totalScore += 3000; // 只要没被过滤掉，就给巨额分，保证排在非锁定结果前
         }
 
-        // B. 同义词叠加 (Resonance) [核心修改]
-        // 不再是一次性加分，而是每个命中的词都加分，实现"双词共振"
+        // B. 同义词叠加
         let thesaurusBonus = 0;
         let hitCount = 0;
-        
         Object.keys(GOV_THESAURUS).forEach(userKey => {
           if (cleanQuery.includes(userKey)) {
             const officialTerms = GOV_THESAURUS[userKey];
             const hitTerm = officialTerms.find(term => name.includes(term));
             
             if (hitTerm) {
-              thesaurusBonus += 1000; // 每个命中词加1000
+              thesaurusBonus += 1000; 
               hitCount++;
               translatedWord += `${userKey}→${hitTerm} `;
               matchReason = "术语映射";
             }
           }
         });
-        // 额外的奖励：如果命中了2个以上的关键词，额外再奖励
         if (hitCount >= 2) thesaurusBonus += 1000;
-        
         totalScore += thesaurusBonus;
 
         // C. 字符覆盖率
@@ -234,9 +257,7 @@ export default function Home() {
 
       // 7. 排序
       const sorted = finalResults
-        .filter(i => {
-           return i.totalScore > 50 || i.thesaurusBonus > 0;
-        })
+        .filter(i => i.totalScore > 50 || i.thesaurusBonus > 0)
         .sort((a, b) => b.totalScore - a.totalScore);
 
       setResults(sorted);
@@ -256,8 +277,8 @@ export default function Home() {
       {/* 顶部栏 */}
       <div className="bg-slate-900 text-white p-4 flex justify-between items-center sticky top-0 z-20 shadow-md">
         <div>
-          <h1 className="font-bold text-lg">政务搜索 V20.0 (共振版)</h1>
-          <p className="text-xs text-slate-400">双关键词叠加 | 排序优化</p>
+          <h1 className="font-bold text-lg">政务搜索 V21.0 (概念穿透)</h1>
+          <p className="text-xs text-slate-400">别名过滤 (健康证=从业检查) | 强力去噪</p>
         </div>
         <button onClick={() => setConfigOpen(!configOpen)} className="p-2 hover:bg-slate-700 rounded-full">
           <Settings className="w-5 h-5" />
@@ -338,6 +359,7 @@ export default function Home() {
         ) : (
           !loading && <div className="text-center text-gray-400 text-sm py-10">
             暂无结果<br/>
+            {query.includes("健康") && <span className="text-xs text-red-300">系统已过滤非[健康]类服务</span>}
           </div>
         )}
         
@@ -390,7 +412,7 @@ export default function Home() {
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleSearch()}
-            placeholder="搜服务 (如: 想学新技术)..." 
+            placeholder="搜服务 (如: 健康证怎么办)..." 
             className="flex-1 p-3 bg-gray-100 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
           />
           <button onClick={handleSearch} disabled={loading} className="bg-blue-600 text-white px-6 rounded-xl font-bold text-sm min-w-[80px] active:scale-95 transition">
