@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Papa from 'papaparse';
-import { Upload, Settings, Zap, Save, MapPin, Briefcase, Building2, Search, XCircle } from 'lucide-react';
+import { Upload, Settings, Zap, Save, MapPin, Briefcase, Building2, Search, Filter } from 'lucide-react';
 
 const PRESETS = {
   groq: { name: 'Groq (极速)', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama3-8b-8192' },
@@ -10,7 +10,7 @@ const PRESETS = {
   custom: { name: '自定义', baseUrl: '', model: '' }
 };
 
-// V12的口语字典保留，辅助动词识别
+// 口语字典 (移除通用的单字"查"，防止干扰)
 const SEMANTIC_MAPPINGS = {
   "坏": ["损坏", "换领", "更换", "失效"],
   "烂": ["损坏", "换领"],
@@ -20,7 +20,8 @@ const SEMANTIC_MAPPINGS = {
   "改": ["变更", "更正", "修改"],
   "错": ["变更", "更正"],
   "丢": ["补领", "补办", "遗失", "挂失"],
-  "查": ["查询", "核验", "进度", "打印"],
+  // 注意：移除了 "查" -> "查询" 的强映射，改用下方的字符覆盖率算法处理
+  "办": ["申领", "办理", "申请"]
 };
 
 export default function Home() {
@@ -32,7 +33,6 @@ export default function Home() {
   
   const addLog = (msg) => setLogs(prev => [`${msg}`, ...prev]);
 
-  // 上下文
   const [query, setQuery] = useState('');
   const [userRole, setUserRole] = useState('自然人');
   const [location, setLocation] = useState('株洲市');
@@ -70,6 +70,26 @@ export default function Home() {
     });
   };
 
+  // --- 核心算法：字符覆盖率 (Character Coverage) ---
+  // 解决 "查成绩" vs "成绩查询" 的乱序匹配问题
+  const calculateCoverage = (queryStr, targetStr) => {
+    if (!queryStr || !targetStr) return 0;
+    
+    // 移除空格，拆分成字符数组
+    const queryChars = queryStr.replace(/\s+/g, '').split('');
+    const target = targetStr.toLowerCase();
+    
+    // 计算有多少个字在目标中出现了
+    let hitCount = 0;
+    queryChars.forEach(char => {
+      if (target.includes(char.toLowerCase())) {
+        hitCount++;
+      }
+    });
+
+    return hitCount / queryChars.length; // 返回 0.0 - 1.0
+  };
+
   const handleSearch = async () => {
     if (!apiConfig.apiKey) return alert('请先配置 API Key');
     if (csvData.length === 0) return alert('请先导入 CSV');
@@ -84,7 +104,6 @@ export default function Home() {
       // 1. 渠道过滤
       const channelFiltered = csvData.filter(item => {
         const itemChannels = item['发布渠道'] || "";
-        // 兼容中文分号、斜杠等分隔符
         const channels = itemChannels.split(/[,，;、/]/).map(c => c.trim().toUpperCase());
         const userChannel = channel.toUpperCase();
         return channels.length === 0 || channels.includes(userChannel);
@@ -98,9 +117,8 @@ export default function Home() {
       }));
 
       // 3. AI 分析
-      addLog('🤖 AI + 关键词双重匹配...');
+      addLog('🤖 AI + 覆盖率计算中...');
       let aiScoresMap = {};
-      
       try {
         const response = await fetch('/api/search', {
           method: 'POST',
@@ -110,38 +128,44 @@ export default function Home() {
         const data = await response.json();
         aiScoresMap = data.scores || {};
       } catch (e) {
-        addLog('AI服务超时，降级为纯文本匹配');
+        addLog('AI超时，降级为规则模式');
       }
 
-      // 4. V13.0 排序算法：字面匹配霸权
+      // 4. V15.0 排序算法：乱序全匹配霸权
       const finalResults = channelFiltered.map(item => {
         const code = item['事项编码'];
         const name = item['事项名称'];
-        const desc = item['事项描述'] || "";
         const aiScore = aiScoresMap[code] || 0;
         
         let totalScore = aiScore * 1000; 
         let matchReason = "";
 
-        // --- A. 字面包含匹配 (Text Match) [霸权逻辑] ---
-        // 只要服务名称里包含了用户的搜索词，或者包含了搜索词的一部分（超过2个字）
-        // 直接给予极高分，这比 AI 猜的更准
-        let textMatchBonus = 0;
-        
-        // 1. 完全包含 (如搜"政策"，命中"政策速递")
-        if (name.includes(query)) {
-            textMatchBonus = 2000; 
-            matchReason = "名称包含";
-        } 
-        // 2. 部分包含 (如搜"政策解读"，命中"政策速递") - 防止漏网
-        else if (query.length >= 2 && name.includes(query.substring(0, 2))) {
-            textMatchBonus = 500;
-            matchReason = "部分包含";
+        // --- A. 字符覆盖率匹配 (Coverage Match) [核心修复] ---
+        // 逻辑：如果 query 中的字，绝大部分都出现在了 name 里，哪怕顺序不对，也给高分
+        const coverage = calculateCoverage(query, name);
+        let coverageBonus = 0;
+
+        if (coverage === 1.0) {
+            // 100% 的字都对上了 (如 "查成绩" vs "成绩查询")
+            coverageBonus = 3000; 
+            matchReason = "全字匹配";
+        } else if (coverage >= 0.66 && query.length >= 3) {
+            // 2/3 的字对上了 (如 "查高考成绩" vs "高考成绩")
+            coverageBonus = 1000;
+            matchReason = "多字匹配";
+        } else if (coverage > 0.5 && query.length === 2) {
+             // 2个字中1个 (如 "查分" vs "分数查询") -> 这个比较弱，给一点点分
+             coverageBonus = 200;
         }
 
-        totalScore += textMatchBonus;
+        totalScore += coverageBonus;
 
-        // --- B. 口语字典匹配 ---
+        // --- B. 字面/子序列匹配 (辅助) ---
+        if (name.includes(query)) {
+            totalScore += 500; // 连续包含额外加分
+        }
+
+        // --- C. 口语字典匹配 ---
         let actionBonus = 0;
         Object.keys(SEMANTIC_MAPPINGS).forEach(userVerb => {
           if (query.includes(userVerb)) {
@@ -154,14 +178,11 @@ export default function Home() {
         });
         totalScore += actionBonus;
 
-        // --- C. 角色 & 定位 ---
-        // 增强版分隔符：支持 / 、 , ;
+        // --- D. 角色 & 定位 ---
         const itemTargets = (item['服务对象'] || "").split(/[,，;、/]/).map(t => t.trim());
-        
-        // 角色匹配宽松化：只要不冲突就不扣分
         const isRoleMatch = itemTargets.some(t => t.includes(userRole)) || 
                             itemTargets.some(t => t.includes(userRole === '自然人' ? '个人' : '企业')) ||
-                            itemTargets.includes("全部"); // 如果CSV里有“全部”
+                            itemTargets.includes("全部");
         
         const itemDept = item['所属市州单位'] || "";
         const isLocValid = itemDept.includes(location) || itemDept.includes('省') || itemDept.includes('中央') || itemDept.includes('国家');
@@ -169,14 +190,14 @@ export default function Home() {
         if (!isRoleMatch) totalScore -= 300; 
         if (!isLocValid) totalScore -= 500;
 
-        // --- D. 附加 ---
+        // --- E. 附加 ---
         if (item['是否高频事项'] === '是') totalScore += 50; 
         if (useSatisfaction && item['满意度']) totalScore += parseFloat(item['满意度']) * 5;
 
         return {
           ...item,
           aiScore,
-          textMatchBonus,
+          coverage,
           matchReason,
           isRoleMatch,
           isLocValid,
@@ -184,13 +205,15 @@ export default function Home() {
         };
       });
 
-      // 5. 排序与洁癖过滤
+      // 5. 排序与过滤
       const sorted = finalResults
         .filter(i => {
-            // 过滤逻辑：
-            // 1. 总分必须 > 100 (排除只有高频加分但完全不相关的)
-            // 2. 或者有明确的字面/口语匹配
-            return i.totalScore > 100 || i.textMatchBonus > 0 || i.matchReason !== "";
+            // 宽松过滤：
+            // 1. AI 强推荐
+            // 2. 覆盖率 > 0.6 (重点)
+            // 3. 口语命中
+            // 4. 或者总分 > 50 (仅高频)
+            return i.aiScore > 0.5 || i.coverage >= 0.6 || i.matchReason !== "" || i.totalScore > 50;
         })
         .sort((a, b) => b.totalScore - a.totalScore);
 
@@ -211,8 +234,8 @@ export default function Home() {
       {/* 顶部栏 */}
       <div className="bg-slate-900 text-white p-4 flex justify-between items-center sticky top-0 z-20 shadow-md">
         <div>
-          <h1 className="font-bold text-lg">政务搜索 V13.0 (霸权版)</h1>
-          <p className="text-xs text-slate-400">字面匹配优先 | 噪音彻底过滤</p>
+          <h1 className="font-bold text-lg">政务搜索 V15.0 (乱序匹配)</h1>
+          <p className="text-xs text-slate-400">支持倒装句 (查成绩 = 成绩查询)</p>
         </div>
         <button onClick={() => setConfigOpen(!configOpen)} className="p-2 hover:bg-slate-700 rounded-full">
           <Settings className="w-5 h-5" />
@@ -293,7 +316,6 @@ export default function Home() {
         ) : (
           !loading && <div className="text-center text-gray-400 text-sm py-10">
             暂无结果<br/>
-            <span className="text-xs text-gray-300">系统已过滤低相关性内容</span>
           </div>
         )}
         
@@ -304,11 +326,11 @@ export default function Home() {
             <div key={idx} className="bg-white border rounded-lg p-3 shadow-sm hover:border-blue-400 transition relative overflow-hidden group">
               {/* 顶部标签 */}
               <div className="absolute top-0 right-0 flex">
-                 {item.textMatchBonus > 0 && (
-                   <span className="px-2 py-0.5 text-[10px] font-bold bg-pink-100 text-pink-700 rounded-bl-lg">精准匹配</span>
+                 {item.coverage >= 1 && (
+                   <span className="px-2 py-0.5 text-[10px] font-bold bg-purple-100 text-purple-700 rounded-bl-lg">全词匹配</span>
                  )}
-                 {item.aiScore > 0.8 && !item.textMatchBonus && (
-                   <span className="px-2 py-0.5 text-[10px] font-bold bg-green-100 text-green-700 rounded-bl-lg">AI推荐</span>
+                 {item.coverage >= 0.6 && item.coverage < 1 && (
+                   <span className="px-2 py-0.5 text-[10px] font-bold bg-blue-50 text-blue-600 rounded-bl-lg">多词匹配</span>
                  )}
               </div>
 
@@ -323,10 +345,10 @@ export default function Home() {
                    <Building2 className="w-3 h-3"/> {item['所属市州单位']}
                 </span>
 
-                {/* 调试：显示命中原因 */}
-                {item.matchReason && (
-                   <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-600 text-[10px] border border-blue-100">
-                     {item.matchReason}
+                {/* 调试：显示覆盖率 */}
+                {item.coverage > 0 && (
+                   <span className="px-2 py-0.5 rounded bg-gray-50 text-gray-400 text-[10px] border border-gray-100">
+                     覆盖率: {(item.coverage * 100).toFixed(0)}%
                    </span>
                 )}
               </div>
@@ -342,7 +364,7 @@ export default function Home() {
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleSearch()}
-            placeholder="搜服务 (如: 政策解读)..." 
+            placeholder="搜服务 (如: 查成绩)..." 
             className="flex-1 p-3 bg-gray-100 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
           />
           <button onClick={handleSearch} disabled={loading} className="bg-blue-600 text-white px-6 rounded-xl font-bold text-sm min-w-[80px] active:scale-95 transition">
