@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Papa from 'papaparse';
-import { Upload, Settings, Zap, Save, MapPin, Briefcase, Building2, Search, Filter } from 'lucide-react';
+import { Upload, Settings, Zap, Save, MapPin, Briefcase, Building2, Search, ArrowRightLeft } from 'lucide-react';
 
 const PRESETS = {
   groq: { name: 'Groq (极速)', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama3-8b-8192' },
@@ -10,19 +10,32 @@ const PRESETS = {
   custom: { name: '自定义', baseUrl: '', model: '' }
 };
 
-// 口语字典 (移除通用的单字"查"，防止干扰)
+// V16.0 意图翻译字典 (扩充了学习、考试、技术类)
 const SEMANTIC_MAPPINGS = {
+  // 学习/培训类
+  "学": ["培训", "教育", "学校", "技能", "职业", "课程"],
+  "教": ["教育", "教师", "学校"],
+  "考": ["考试", "成绩", "资格", "证书", "笔试", "面试"],
+  "证": ["证书", "执照", "资格"],
+  
+  // 技术/职业类 (解决"学技术"搜不到"职业培训"的问题)
+  "技术": ["技能", "职业", "工种", "资格", "培训"],
+  
+  // 损坏/变更类
   "坏": ["损坏", "换领", "更换", "失效"],
-  "烂": ["损坏", "换领"],
-  "折": ["损坏", "换领"],
-  "断": ["损坏", "换领"],
   "旧": ["到期", "换领", "有效期"],
   "改": ["变更", "更正", "修改"],
   "错": ["变更", "更正"],
   "丢": ["补领", "补办", "遗失", "挂失"],
-  // 注意：移除了 "查" -> "查询" 的强映射，改用下方的字符覆盖率算法处理
-  "办": ["申领", "办理", "申请"]
+  
+  // 查询类
+  "查": ["查询", "核验", "进度", "打印", "档案"],
+  "看": ["查询", "核验"],
+  "办": ["申领", "办理", "申请", "注册"]
 };
+
+// 噪音词库 (自动清洗)
+const NOISE_WORDS = ["我想", "我要", "想", "要", "怎么", "如何", "去哪里", "办理", "的", "一下"];
 
 export default function Home() {
   const [csvData, setCsvData] = useState([]);
@@ -70,24 +83,16 @@ export default function Home() {
     });
   };
 
-  // --- 核心算法：字符覆盖率 (Character Coverage) ---
-  // 解决 "查成绩" vs "成绩查询" 的乱序匹配问题
+  // 覆盖率算法
   const calculateCoverage = (queryStr, targetStr) => {
     if (!queryStr || !targetStr) return 0;
-    
-    // 移除空格，拆分成字符数组
     const queryChars = queryStr.replace(/\s+/g, '').split('');
     const target = targetStr.toLowerCase();
-    
-    // 计算有多少个字在目标中出现了
     let hitCount = 0;
     queryChars.forEach(char => {
-      if (target.includes(char.toLowerCase())) {
-        hitCount++;
-      }
+      if (target.includes(char.toLowerCase())) hitCount++;
     });
-
-    return hitCount / queryChars.length; // 返回 0.0 - 1.0
+    return hitCount / queryChars.length;
   };
 
   const handleSearch = async () => {
@@ -98,10 +103,18 @@ export default function Home() {
     setLoading(true);
     setResults([]);
     const startTime = performance.now();
-    addLog(`🔍 搜索: "${query}"`);
+    addLog(`原始搜索: "${query}"`);
 
     try {
-      // 1. 渠道过滤
+      // 1. 噪音清洗 (Query Cleaning)
+      let cleanQuery = query;
+      NOISE_WORDS.forEach(word => {
+        cleanQuery = cleanQuery.replace(word, "");
+      });
+      if (cleanQuery.length === 0) cleanQuery = query; // 防止删空了
+      addLog(`清洗后关键词: "${cleanQuery}"`);
+
+      // 2. 渠道过滤
       const channelFiltered = csvData.filter(item => {
         const itemChannels = item['发布渠道'] || "";
         const channels = itemChannels.split(/[,，;、/]/).map(c => c.trim().toUpperCase());
@@ -109,15 +122,15 @@ export default function Home() {
         return channels.length === 0 || channels.includes(userChannel);
       });
 
-      // 2. 准备 Payload
+      // 3. Payload
       const candidates = channelFiltered.slice(0, 50).map(item => ({
         id: item['事项编码'],
         n: item['事项名称'],
         d: (item['事项描述'] || "").substring(0, 50)
       }));
 
-      // 3. AI 分析
-      addLog('🤖 AI + 覆盖率计算中...');
+      // 4. AI 分析
+      addLog('🤖 AI + 意图翻译中...');
       let aiScoresMap = {};
       try {
         const response = await fetch('/api/search', {
@@ -128,10 +141,10 @@ export default function Home() {
         const data = await response.json();
         aiScoresMap = data.scores || {};
       } catch (e) {
-        addLog('AI超时，降级为规则模式');
+        addLog('AI超时');
       }
 
-      // 4. V15.0 排序算法：乱序全匹配霸权
+      // 5. V16.0 排序算法：意图翻译霸权
       const finalResults = channelFiltered.map(item => {
         const code = item['事项编码'];
         const name = item['事项名称'];
@@ -140,43 +153,40 @@ export default function Home() {
         let totalScore = aiScore * 1000; 
         let matchReason = "";
 
-        // --- A. 字符覆盖率匹配 (Coverage Match) [核心修复] ---
-        // 逻辑：如果 query 中的字，绝大部分都出现在了 name 里，哪怕顺序不对，也给高分
-        const coverage = calculateCoverage(query, name);
-        let coverageBonus = 0;
-
-        if (coverage === 1.0) {
-            // 100% 的字都对上了 (如 "查成绩" vs "成绩查询")
-            coverageBonus = 3000; 
-            matchReason = "全字匹配";
-        } else if (coverage >= 0.66 && query.length >= 3) {
-            // 2/3 的字对上了 (如 "查高考成绩" vs "高考成绩")
-            coverageBonus = 1000;
-            matchReason = "多字匹配";
-        } else if (coverage > 0.5 && query.length === 2) {
-             // 2个字中1个 (如 "查分" vs "分数查询") -> 这个比较弱，给一点点分
-             coverageBonus = 200;
-        }
-
-        totalScore += coverageBonus;
-
-        // --- B. 字面/子序列匹配 (辅助) ---
-        if (name.includes(query)) {
-            totalScore += 500; // 连续包含额外加分
-        }
-
-        // --- C. 口语字典匹配 ---
-        let actionBonus = 0;
-        Object.keys(SEMANTIC_MAPPINGS).forEach(userVerb => {
-          if (query.includes(userVerb)) {
-            const officialTerms = SEMANTIC_MAPPINGS[userVerb];
-            if (officialTerms.some(term => name.includes(term))) {
-              actionBonus = 800;
-              matchReason = matchReason || "口语命中";
+        // --- A. 意图翻译匹配 (Intent Translation) [核心升级] ---
+        // 逻辑：如果用户的词命中字典key，且服务名命中字典value，直接加分
+        let intentBonus = 0;
+        let translatedWord = "";
+        
+        Object.keys(SEMANTIC_MAPPINGS).forEach(userKey => {
+          if (query.includes(userKey)) {
+            const officialTerms = SEMANTIC_MAPPINGS[userKey];
+            const hitTerm = officialTerms.find(term => name.includes(term));
+            
+            if (hitTerm) {
+              intentBonus += 2000; // 只要意图对了，权重极大！
+              translatedWord = `${userKey}→${hitTerm}`;
+              matchReason = "意图命中";
             }
           }
         });
-        totalScore += actionBonus;
+        totalScore += intentBonus;
+
+        // --- B. 字符覆盖率 (基于清洗后的词) ---
+        const coverage = calculateCoverage(cleanQuery, name);
+        let coverageBonus = 0;
+        if (coverage === 1.0) {
+            coverageBonus = 1500; 
+            matchReason = matchReason || "全字匹配";
+        } else if (coverage >= 0.6 && cleanQuery.length >= 2) {
+            coverageBonus = 500;
+        }
+        totalScore += coverageBonus;
+
+        // --- C. 字面包含 (连续) ---
+        if (name.includes(cleanQuery)) {
+            totalScore += 800;
+        }
 
         // --- D. 角色 & 定位 ---
         const itemTargets = (item['服务对象'] || "").split(/[,，;、/]/).map(t => t.trim());
@@ -197,23 +207,19 @@ export default function Home() {
         return {
           ...item,
           aiScore,
-          coverage,
+          intentBonus,
+          translatedWord,
           matchReason,
-          isRoleMatch,
-          isLocValid,
+          coverage,
           totalScore
         };
       });
 
-      // 5. 排序与过滤
+      // 6. 排序
       const sorted = finalResults
         .filter(i => {
-            // 宽松过滤：
-            // 1. AI 强推荐
-            // 2. 覆盖率 > 0.6 (重点)
-            // 3. 口语命中
-            // 4. 或者总分 > 50 (仅高频)
-            return i.aiScore > 0.5 || i.coverage >= 0.6 || i.matchReason !== "" || i.totalScore > 50;
+            // 只要有任何形式的命中（意图、覆盖、AI），都显示
+            return i.intentBonus > 0 || i.coverage >= 0.6 || i.aiScore > 0.5 || i.totalScore > 50;
         })
         .sort((a, b) => b.totalScore - a.totalScore);
 
@@ -234,8 +240,8 @@ export default function Home() {
       {/* 顶部栏 */}
       <div className="bg-slate-900 text-white p-4 flex justify-between items-center sticky top-0 z-20 shadow-md">
         <div>
-          <h1 className="font-bold text-lg">政务搜索 V15.0 (乱序匹配)</h1>
-          <p className="text-xs text-slate-400">支持倒装句 (查成绩 = 成绩查询)</p>
+          <h1 className="font-bold text-lg">政务搜索 V16.0 (翻译版)</h1>
+          <p className="text-xs text-slate-400">意图翻译 (学-&gt;培训) | 噪音清洗</p>
         </div>
         <button onClick={() => setConfigOpen(!configOpen)} className="p-2 hover:bg-slate-700 rounded-full">
           <Settings className="w-5 h-5" />
@@ -326,11 +332,16 @@ export default function Home() {
             <div key={idx} className="bg-white border rounded-lg p-3 shadow-sm hover:border-blue-400 transition relative overflow-hidden group">
               {/* 顶部标签 */}
               <div className="absolute top-0 right-0 flex">
-                 {item.coverage >= 1 && (
+                 {item.intentBonus > 0 && (
+                   <span className="px-2 py-0.5 text-[10px] font-bold bg-pink-100 text-pink-700 rounded-bl-lg">
+                     {item.translatedWord}
+                   </span>
+                 )}
+                 {item.coverage === 1 && (
                    <span className="px-2 py-0.5 text-[10px] font-bold bg-purple-100 text-purple-700 rounded-bl-lg">全词匹配</span>
                  )}
-                 {item.coverage >= 0.6 && item.coverage < 1 && (
-                   <span className="px-2 py-0.5 text-[10px] font-bold bg-blue-50 text-blue-600 rounded-bl-lg">多词匹配</span>
+                 {item.aiScore > 0.8 && !item.intentBonus && (
+                   <span className="px-2 py-0.5 text-[10px] font-bold bg-green-100 text-green-700 rounded-bl-lg">AI推荐</span>
                  )}
               </div>
 
@@ -344,11 +355,10 @@ export default function Home() {
                 <span className={`px-2 py-0.5 rounded text-[10px] flex items-center gap-1 ${item['所属市州单位'].includes('省') ? 'bg-purple-50 text-purple-700 font-medium' : 'bg-gray-100 text-gray-600'}`}>
                    <Building2 className="w-3 h-3"/> {item['所属市州单位']}
                 </span>
-
-                {/* 调试：显示覆盖率 */}
-                {item.coverage > 0 && (
-                   <span className="px-2 py-0.5 rounded bg-gray-50 text-gray-400 text-[10px] border border-gray-100">
-                     覆盖率: {(item.coverage * 100).toFixed(0)}%
+                
+                {item.intentBonus > 0 && (
+                   <span className="px-2 py-0.5 rounded bg-pink-50 text-pink-600 text-[10px] border border-pink-100 flex items-center gap-1">
+                     <ArrowRightLeft className="w-3 h-3"/> 意图翻译
                    </span>
                 )}
               </div>
@@ -364,7 +374,7 @@ export default function Home() {
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleSearch()}
-            placeholder="搜服务 (如: 查成绩)..." 
+            placeholder="搜服务 (如: 我想学技术)..." 
             className="flex-1 p-3 bg-gray-100 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
           />
           <button onClick={handleSearch} disabled={loading} className="bg-blue-600 text-white px-6 rounded-xl font-bold text-sm min-w-[80px] active:scale-95 transition">
