@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Papa from 'papaparse';
-import { Upload, Settings, Zap, Save, MapPin, Briefcase, Building2, Search, BookOpen } from 'lucide-react';
+import { Upload, Settings, Zap, Save, MapPin, Briefcase, Building2, Search, Lock, Filter } from 'lucide-react';
 
 const PRESETS = {
   groq: { name: 'Groq (极速)', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama3-8b-8192' },
@@ -10,45 +10,32 @@ const PRESETS = {
   custom: { name: '自定义', baseUrl: '', model: '' }
 };
 
-// V17.0 政务同义词库 (Government Thesaurus)
-// 这是解决"搜不到"最核心的知识库
+// 1. 核心实体库 (Critical Entities)
+// 规则：如果搜索词包含这些词，结果必须包含该词，否则直接过滤
+const CORE_ENTITIES = [
+  "身份证", "社保", "医保", "公积金", "护照", "户口", "居住证", 
+  "驾照", "行驶证", "营业执照", "出生证", "结婚证", "离婚证",
+  "普通话", "不动产", "房产"
+];
+
+// 2. 政务同义词库 (辅助排序)
 const GOV_THESAURUS = {
-  // --- 医疗卫生类 ---
-  "医生": ["医师", "医疗", "行医", "执业"],
+  "医生": ["医师", "医疗", "行医"],
   "大夫": ["医师"],
-  "护士": ["护师", "护理"],
-  "医院": ["医疗机构", "卫生院"],
-  
-  // --- 资格/证书类 ---
-  "资格": ["执业", "注册", "职业", "资质", "等级"],
-  "证": ["证书", "执照", "证明"],
-  
-  // --- 工商/开店类 ---
   "开店": ["设立", "准营", "经营", "许可", "注册"],
-  "公司": ["企业", "法人", "市场主体"],
-  "执照": ["营业执照", "注册", "登记"],
-  
-  // --- 房产/建设类 ---
-  "房": ["不动产", "房屋", "住建", "公积金"],
-  "地": ["土地", "不动产", "自然资源"],
-  
-  // --- 学习/培训类 ---
-  "学": ["培训", "教育", "学校", "技能", "课程"],
-  "教": ["教育", "教师", "学校"],
-  "考": ["考试", "成绩", "笔试", "面试"],
-  
-  // --- 动作/状态类 ---
+  "公司": ["企业", "法人"],
   "坏": ["损坏", "换领", "更换", "失效"],
+  "烂": ["损坏", "换领"],
   "旧": ["到期", "换领", "有效期"],
   "改": ["变更", "更正", "修改"],
   "错": ["变更", "更正"],
   "丢": ["补领", "补办", "遗失", "挂失"],
+  "弄丢": ["补领", "补办", "遗失", "挂失"],
   "查": ["查询", "核验", "进度", "打印", "档案"],
   "办": ["申领", "办理", "申请", "注册"]
 };
 
-// 噪音词 (自动清洗)
-const NOISE_WORDS = ["我想", "我要", "想", "要", "怎么", "如何", "去哪里", "办理", "的", "一下", "查询", "服务"];
+const NOISE_WORDS = ["我想", "我要", "想", "要", "怎么", "如何", "去哪里", "办理", "的", "一下", "服务", "弄"];
 
 export default function Home() {
   const [csvData, setCsvData] = useState([]);
@@ -121,11 +108,9 @@ export default function Home() {
       // 1. 噪音清洗
       let cleanQuery = query;
       NOISE_WORDS.forEach(word => {
-        // 简单替换，注意顺序
         cleanQuery = cleanQuery.replace(word, "");
       });
-      if (cleanQuery.length === 0) cleanQuery = query; 
-      addLog(`清洗后: "${cleanQuery}"`);
+      if (cleanQuery.length === 0) cleanQuery = query;
 
       // 2. 渠道过滤
       const channelFiltered = csvData.filter(item => {
@@ -135,15 +120,33 @@ export default function Home() {
         return channels.length === 0 || channels.includes(userChannel);
       });
 
-      // 3. Payload
-      const candidates = channelFiltered.slice(0, 50).map(item => ({
+      // 3. V18.0 核心实体锁定 (Entity Locking)
+      // 如果搜索词包含“身份证”，则强制要求结果必须包含“身份证”
+      let lockedEntity = null;
+      CORE_ENTITIES.forEach(entity => {
+        if (cleanQuery.includes(entity)) {
+          lockedEntity = entity;
+        }
+      });
+      
+      let entityFiltered = channelFiltered;
+      if (lockedEntity) {
+        addLog(`🔒 触发实体锁定: 必须包含 "${lockedEntity}"`);
+        entityFiltered = channelFiltered.filter(item => {
+          return item['事项名称'].includes(lockedEntity);
+        });
+        addLog(`实体过滤后剩余: ${entityFiltered.length} 条`);
+      }
+
+      // 4. Payload (只发过滤后的数据给AI，省流量)
+      const candidates = entityFiltered.slice(0, 40).map(item => ({
         id: item['事项编码'],
         n: item['事项名称'],
         d: (item['事项描述'] || "").substring(0, 50)
       }));
 
-      // 4. AI 分析
-      addLog('🤖 AI + 同义词库匹配...');
+      // 5. AI 分析
+      addLog('🤖 AI 分析排序中...');
       let aiScoresMap = {};
       try {
         const response = await fetch('/api/search', {
@@ -157,8 +160,8 @@ export default function Home() {
         addLog('AI超时');
       }
 
-      // 5. V17.0 排序算法：政务同义词库霸权
-      const finalResults = channelFiltered.map(item => {
+      // 6. 排序打分
+      const finalResults = entityFiltered.map(item => {
         const code = item['事项编码'];
         const name = item['事项名称'];
         const aiScore = aiScoresMap[code] || 0;
@@ -167,42 +170,35 @@ export default function Home() {
         let matchReason = "";
         let translatedWord = "";
 
-        // --- A. 同义词库映射 (Thesaurus Mapping) [核心] ---
+        // A. 核心实体奖励 (如果锁定了实体，给基础分)
+        if (lockedEntity && name.includes(lockedEntity)) {
+            totalScore += 2000;
+            matchReason = `锁定:${lockedEntity}`;
+        }
+
+        // B. 同义词/动作映射
         let thesaurusBonus = 0;
-        
-        // 遍历用户输入的每一个字/词
         Object.keys(GOV_THESAURUS).forEach(userKey => {
           if (query.includes(userKey)) {
             const officialTerms = GOV_THESAURUS[userKey];
-            // 检查服务名称是否包含官方术语
             const hitTerm = officialTerms.find(term => name.includes(term));
             
             if (hitTerm) {
-              thesaurusBonus += 2000; // 命中黑话，权重极大
+              thesaurusBonus += 1500; // 动作命中了！
               translatedWord = `${userKey}→${hitTerm}`;
-              matchReason = "术语映射";
             }
           }
         });
         totalScore += thesaurusBonus;
 
-        // --- B. 字符覆盖率 (Coverage) ---
+        // C. 字符覆盖率 (乱序匹配)
         const coverage = calculateCoverage(cleanQuery, name);
         let coverageBonus = 0;
-        if (coverage === 1.0) {
-            coverageBonus = 1500; 
-            matchReason = matchReason || "全字匹配";
-        } else if (coverage >= 0.6 && cleanQuery.length >= 2) {
-            coverageBonus = 500;
-        }
+        if (coverage === 1.0) coverageBonus = 1000;
+        else if (coverage >= 0.6) coverageBonus = 500;
         totalScore += coverageBonus;
 
-        // --- C. 连续字面包含 ---
-        if (name.includes(cleanQuery)) {
-            totalScore += 800;
-        }
-
-        // --- D. 角色 & 定位 ---
+        // D. 角色 & 定位
         const itemTargets = (item['服务对象'] || "").split(/[,，;、/]/).map(t => t.trim());
         const isRoleMatch = itemTargets.some(t => t.includes(userRole)) || 
                             itemTargets.some(t => t.includes(userRole === '自然人' ? '个人' : '企业')) ||
@@ -211,12 +207,11 @@ export default function Home() {
         const itemDept = item['所属市州单位'] || "";
         const isLocValid = itemDept.includes(location) || itemDept.includes('省') || itemDept.includes('中央') || itemDept.includes('国家');
 
-        if (!isRoleMatch) totalScore -= 300; 
+        if (!isRoleMatch) totalScore -= 500; 
         if (!isLocValid) totalScore -= 500;
 
-        // --- E. 附加 ---
+        // E. 附加
         if (item['是否高频事项'] === '是') totalScore += 50; 
-        if (useSatisfaction && item['满意度']) totalScore += parseFloat(item['满意度']) * 5;
 
         return {
           ...item,
@@ -229,11 +224,13 @@ export default function Home() {
         };
       });
 
-      // 6. 排序
+      // 7. 最终排序与清洗
       const sorted = finalResults
         .filter(i => {
-            // 宽松显示：只要有同义词命中，或者AI分高，或者覆盖率高，都显示
-            return i.thesaurusBonus > 0 || i.coverage >= 0.6 || i.aiScore > 0.5 || i.totalScore > 50;
+           // 如果触发了实体锁定，则不需要分数门槛，因为已经很精准了
+           if (lockedEntity) return true;
+           // 否则需要一定的分数才显示
+           return i.totalScore > 50;
         })
         .sort((a, b) => b.totalScore - a.totalScore);
 
@@ -254,8 +251,8 @@ export default function Home() {
       {/* 顶部栏 */}
       <div className="bg-slate-900 text-white p-4 flex justify-between items-center sticky top-0 z-20 shadow-md">
         <div>
-          <h1 className="font-bold text-lg">政务搜索 V17.0 (专家版)</h1>
-          <p className="text-xs text-slate-400">内置政务术语库 (医生=医师)</p>
+          <h1 className="font-bold text-lg">政务搜索 V18.0 (实体霸权)</h1>
+          <p className="text-xs text-slate-400">核心实体锁定 | 无关内容自动剔除</p>
         </div>
         <button onClick={() => setConfigOpen(!configOpen)} className="p-2 hover:bg-slate-700 rounded-full">
           <Settings className="w-5 h-5" />
@@ -336,6 +333,7 @@ export default function Home() {
         ) : (
           !loading && <div className="text-center text-gray-400 text-sm py-10">
             暂无结果<br/>
+            {query.includes("身份证") && <span className="text-xs text-red-300">已启用[身份证]强过滤，无关结果已隐藏</span>}
           </div>
         )}
         
@@ -346,16 +344,15 @@ export default function Home() {
             <div key={idx} className="bg-white border rounded-lg p-3 shadow-sm hover:border-blue-400 transition relative overflow-hidden group">
               {/* 顶部标签 */}
               <div className="absolute top-0 right-0 flex">
-                 {item.translatedWord && (
-                   <span className="px-2 py-0.5 text-[10px] font-bold bg-pink-100 text-pink-700 rounded-bl-lg">
-                     {item.translatedWord}
+                 {item.matchReason && item.matchReason.includes("锁定") && (
+                   <span className="px-2 py-0.5 text-[10px] font-bold bg-purple-100 text-purple-700 rounded-bl-lg flex items-center gap-1">
+                     <Lock className="w-3 h-3"/> {item.matchReason}
                    </span>
                  )}
-                 {item.coverage === 1 && (
-                   <span className="px-2 py-0.5 text-[10px] font-bold bg-purple-100 text-purple-700 rounded-bl-lg">全词匹配</span>
-                 )}
-                 {item.aiScore > 0.8 && !item.translatedWord && (
-                   <span className="px-2 py-0.5 text-[10px] font-bold bg-green-100 text-green-700 rounded-bl-lg">AI推荐</span>
+                 {item.translatedWord && (
+                   <span className="px-2 py-0.5 text-[10px] font-bold bg-pink-100 text-pink-700 rounded-bl-lg ml-px">
+                     {item.translatedWord}
+                   </span>
                  )}
               </div>
 
@@ -370,9 +367,9 @@ export default function Home() {
                    <Building2 className="w-3 h-3"/> {item['所属市州单位']}
                 </span>
                 
-                {item.thesaurusBonus > 0 && (
-                   <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-600 text-[10px] border border-blue-100 flex items-center gap-1">
-                     <BookOpen className="w-3 h-3"/> 术语命中
+                {item.aiScore > 0.8 && !item.matchReason && (
+                   <span className="px-2 py-0.5 rounded bg-green-50 text-green-700 text-[10px] border border-green-100">
+                     AI推荐
                    </span>
                 )}
               </div>
@@ -388,7 +385,7 @@ export default function Home() {
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleSearch()}
-            placeholder="搜服务 (如: 医生资格)..." 
+            placeholder="搜服务 (如: 身份证弄丢了)..." 
             className="flex-1 p-3 bg-gray-100 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
           />
           <button onClick={handleSearch} disabled={loading} className="bg-blue-600 text-white px-6 rounded-xl font-bold text-sm min-w-[80px] active:scale-95 transition">
