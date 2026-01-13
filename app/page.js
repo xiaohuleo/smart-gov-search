@@ -10,31 +10,22 @@ const PRESETS = {
   custom: { name: '自定义', baseUrl: '', model: '' }
 };
 
-// 1. 核心实体库 (强过滤)
 const CORE_ENTITIES = [
   "身份证", "社保", "医保", "公积金", "护照", "户口", "居住证", 
   "驾照", "行驶证", "营业执照", "出生证", "结婚证", "离婚证",
   "普通话", "不动产", "房产"
 ];
 
-// 2. V19.0 超级政务词典 (扩容版)
 const GOV_THESAURUS = {
-  // --- 学习/技术/职业类 (重点修复) ---
   "技术": ["技能", "职业", "工种", "资格", "培训", "技师"],
   "学": ["培训", "教育", "学校", "技能", "课程", "学习", "人员"],
   "考": ["考试", "成绩", "笔试", "面试", "资格", "证书"],
   "证": ["证书", "执照", "证明", "资格"],
-  
-  // --- 医疗/健康 ---
   "医生": ["医师", "医疗", "行医"],
   "大夫": ["医师"],
   "医院": ["医疗机构", "卫生院"],
-  
-  // --- 商业/法人 ---
   "开店": ["设立", "准营", "经营", "许可", "注册", "个体"],
   "公司": ["企业", "法人", "市场主体"],
-  
-  // --- 动作类 ---
   "坏": ["损坏", "换领", "更换", "失效"],
   "烂": ["损坏", "换领"],
   "旧": ["到期", "换领", "有效期"],
@@ -46,7 +37,7 @@ const GOV_THESAURUS = {
   "办": ["申领", "办理", "申请", "注册", "登记"]
 };
 
-const NOISE_WORDS = ["我想", "我要", "想", "要", "怎么", "如何", "去哪里", "办理", "的", "一下", "服务", "弄", "点"];
+const NOISE_WORDS = ["我想", "我要", "想", "要", "怎么", "如何", "去哪里", "办理", "的", "一下", "服务", "弄", "点", "新"];
 
 export default function Home() {
   const [csvData, setCsvData] = useState([]);
@@ -166,13 +157,14 @@ export default function Home() {
         addLog('AI超时，使用规则兜底');
       }
 
-      // 6. 评分逻辑
+      // 6. 评分逻辑 V20.0
       const finalResults = entityFiltered.map(item => {
         const code = item['事项编码'];
         const name = item['事项名称'];
         const aiScore = aiScoresMap[code] || 0;
         
-        let totalScore = aiScore * 1000; 
+        // V20: 提高 AI 权重，让整体语义理解更好的排前面
+        let totalScore = aiScore * 2000; 
         let matchReason = "";
         let translatedWord = "";
 
@@ -181,31 +173,38 @@ export default function Home() {
             totalScore += 2000;
         }
 
-        // B. 同义词映射 (Thesaurus)
+        // B. 同义词叠加 (Resonance) [核心修改]
+        // 不再是一次性加分，而是每个命中的词都加分，实现"双词共振"
         let thesaurusBonus = 0;
+        let hitCount = 0;
+        
         Object.keys(GOV_THESAURUS).forEach(userKey => {
           if (cleanQuery.includes(userKey)) {
             const officialTerms = GOV_THESAURUS[userKey];
             const hitTerm = officialTerms.find(term => name.includes(term));
             
             if (hitTerm) {
-              thesaurusBonus += 1500; 
-              translatedWord = `${userKey}→${hitTerm}`;
+              thesaurusBonus += 1000; // 每个命中词加1000
+              hitCount++;
+              translatedWord += `${userKey}→${hitTerm} `;
               matchReason = "术语映射";
             }
           }
         });
+        // 额外的奖励：如果命中了2个以上的关键词，额外再奖励
+        if (hitCount >= 2) thesaurusBonus += 1000;
+        
         totalScore += thesaurusBonus;
 
         // C. 字符覆盖率
         const coverage = calculateCoverage(cleanQuery, name);
         let coverageBonus = 0;
-        if (coverage === 1.0) coverageBonus = 1000;
-        else if (coverage >= 0.6) coverageBonus = 500;
+        if (coverage === 1.0) coverageBonus = 1500;
+        else if (coverage >= 0.6) coverageBonus = 800;
         totalScore += coverageBonus;
 
         // D. 连续包含
-        if (name.includes(cleanQuery)) totalScore += 500;
+        if (name.includes(cleanQuery)) totalScore += 800;
 
         // E. 角色 & 定位
         const itemTargets = (item['服务对象'] || "").split(/[,，;、/]/).map(t => t.trim());
@@ -233,12 +232,10 @@ export default function Home() {
         };
       });
 
-      // 7. 排序与显示策略
+      // 7. 排序
       const sorted = finalResults
         .filter(i => {
-           // 如果有明确的术语映射，或者覆盖率高，或者AI分高，就显示
-           // 阈值设低一点，防止"学技术"这种覆盖率低但意图对的被过滤
-           return i.totalScore > 20 || i.thesaurusBonus > 0;
+           return i.totalScore > 50 || i.thesaurusBonus > 0;
         })
         .sort((a, b) => b.totalScore - a.totalScore);
 
@@ -259,8 +256,8 @@ export default function Home() {
       {/* 顶部栏 */}
       <div className="bg-slate-900 text-white p-4 flex justify-between items-center sticky top-0 z-20 shadow-md">
         <div>
-          <h1 className="font-bold text-lg">政务搜索 V19.0 (全谱系)</h1>
-          <p className="text-xs text-slate-400">技术=技能=培训 | 全面词典扩容</p>
+          <h1 className="font-bold text-lg">政务搜索 V20.0 (共振版)</h1>
+          <p className="text-xs text-slate-400">双关键词叠加 | 排序优化</p>
         </div>
         <button onClick={() => setConfigOpen(!configOpen)} className="p-2 hover:bg-slate-700 rounded-full">
           <Settings className="w-5 h-5" />
@@ -377,7 +374,7 @@ export default function Home() {
                 
                 {item.thesaurusBonus > 0 && (
                    <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-600 text-[10px] border border-blue-100 flex items-center gap-1">
-                     <BookOpen className="w-3 h-3"/> 术语命中
+                     <BookOpen className="w-3 h-3"/> 术语({item.thesaurusBonus})
                    </span>
                 )}
               </div>
@@ -393,7 +390,7 @@ export default function Home() {
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleSearch()}
-            placeholder="搜服务 (如: 学技术)..." 
+            placeholder="搜服务 (如: 想学新技术)..." 
             className="flex-1 p-3 bg-gray-100 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
           />
           <button onClick={handleSearch} disabled={loading} className="bg-blue-600 text-white px-6 rounded-xl font-bold text-sm min-w-[80px] active:scale-95 transition">
