@@ -3,7 +3,7 @@
 
 import { useState, useEffect } from "react";
 import Papa from "papaparse";
-import { Search, Upload, Settings, Building2, User, Star, MapPin, Smartphone, Server, Clock, Lightbulb, Zap } from "lucide-react";
+import { Search, Upload, Settings, Building2, User, Star, MapPin, Smartphone, Server, Clock, Lightbulb, Zap, Briefcase } from "lucide-react";
 
 export default function Home() {
   // --- 1. 核心状态 ---
@@ -20,7 +20,6 @@ export default function Home() {
   const [apiBaseUrl, setApiBaseUrl] = useState("https://api.groq.com/openai/v1");
   const [apiModel, setApiModel] = useState("llama3-70b-8192");
   
-  // 上下文模拟
   const [userRole, setUserRole] = useState("自然人");
   const [userCity, setUserCity] = useState("湖南省");
   const [userChannel, setUserChannel] = useState("Android");
@@ -41,27 +40,27 @@ export default function Home() {
     localStorage.setItem(key, value);
   };
 
-  // --- 4. 平台级知识库：状态-动作映射表 ---
-  // 这是解决“过期”搜不到“到期”的最快路径
+  // --- 4. 平台级知识库：民生领域词表 ---
+  // 这里定义的映射越丰富，搜索越智能
   const GOV_KNOWLEDGE_GRAPH = {
-    // 状态：过期/时效
-    "过期": ["到期", "换领", "有效期", "失效", "延续"],
-    "快到期": ["到期", "换领", "延续"],
-    "时间到": ["到期", "换领"],
-    "满期": ["到期", "换领"],
+    // 【就业/工作篇】(解决"找工作"搜不到的问题)
+    "找工作": ["就业", "招聘", "求职", "人才", "岗位", "职业介绍"],
+    "招人": ["招聘", "企业用工", "人才引进"],
+    "失业": ["就业困难", "失业登记", "失业金", "就业援助"],
+    "毕业": ["高校毕业生", "报到", "档案", "就业"],
+    "打工": ["务工", "就业", "农民工"],
+
+    // 【证照/状态篇】
+    "过期": ["到期", "换领", "有效期", "失效"],
+    "搞丢": ["遗失", "补领", "挂失"],
+    "丢了": ["遗失", "补领"],
+    "坏了": ["损坏", "换领"],
     
-    // 状态：遗失/异常
-    "搞丢": ["遗失", "补领", "挂失", "补办"],
-    "丢了": ["遗失", "补领", "挂失"],
-    "不见": ["遗失", "补领"],
-    "坏了": ["损坏", "换领", "补办"],
-    "烂了": ["损坏", "换领"],
-    
-    // 动作：办理
-    "办证": ["办理", "核发", "注册"],
-    "开店": ["经营许可", "设立登记", "营业执照"],
-    "生娃": ["生育", "出生", "落户"],
+    // 【生活/办事篇】
+    "生娃": ["生育", "出生", "落户", "计生"],
+    "看病": ["医疗", "挂号", "医保", "门诊"],
     "买房": ["不动产", "购房", "公积金"],
+    "开店": ["经营许可", "营业执照", "设立登记"],
   };
 
   const handleFileUpload = (e) => {
@@ -82,26 +81,25 @@ export default function Home() {
     const startTime = performance.now();
 
     try {
-      // Step 1: 意图扩展 (Intent Expansion)
       let finalKeywords = new Set();
       let debugSource = {}; 
 
       // A. 基础清洗
-      const cleanQuery = query.replace(/我要|想|办理|查询|怎么|办|申请|在哪里|弄|去哪|搞|了|的|是|啊|吗/g, "");
+      const cleanQuery = query.replace(/我要|想|办理|查询|怎么|办|申请|在哪里|弄|去哪|搞|了|的|是/g, "");
       if (cleanQuery) finalKeywords.add(cleanQuery);
       finalKeywords.add(query);
 
-      // B. 本地知识库映射 (解决 过期->到期)
+      // B. 本地知识库映射
       Object.keys(GOV_KNOWLEDGE_GRAPH).forEach(key => {
         if (query.includes(key)) {
             GOV_KNOWLEDGE_GRAPH[key].forEach(word => {
                 finalKeywords.add(word);
-                debugSource[word] = "知识库映射";
+                debugSource[word] = "知识库";
             });
         }
       });
 
-      // C. LLM 深度推理 (解决复杂语义)
+      // C. LLM 深度推理
       let aiTarget = "all";
       if (apiKey) {
         try {
@@ -131,7 +129,7 @@ export default function Home() {
         sourceMap: debugSource
       });
 
-      // Step 2: 匹配与评分 (Scoring Engine)
+      // Step 2: 评分引擎
       const scoredResults = csvData.map((item) => {
         let score = 0;
         let matchReasons = [];
@@ -148,11 +146,9 @@ export default function Home() {
             matchedKeywords.push(kw);
             let currentScore = 100;
             
-            // 核心业务动作加权 (Platform Logic)
-            // 身份证 + 到期 = 强相关
-            if (["到期", "换领", "遗失", "补领"].includes(kw)) currentScore += 200;
-            if (kw.includes("身份证")) currentScore += 150;
-
+            // 核心业务词加权 (就业/证照)
+            if (["就业", "招聘", "人才", "换领", "补领"].includes(kw)) currentScore += 200;
+            
             score += currentScore;
             
             if (!query.includes(kw)) {
@@ -163,16 +159,15 @@ export default function Home() {
 
         if (score === 0) return { item, score: -1, matchReasons };
 
-        // 场景组合加分 (Contextual Boosting)
-        // 用户搜"过期"，我们映射出了"到期"和"换领"
-        // 如果结果同时包含"身份证"和"换领"，或者"身份证"和"到期"，这才是用户真正要的
-        const hasIdentity = matchedKeywords.some(k => k.includes("身份证") || k.includes("户口"));
-        const hasTimeStatus = matchedKeywords.some(k => ["到期", "过期", "有效期"].includes(k));
-        const hasAction = matchedKeywords.some(k => ["换领", "换证", "补领"].includes(k));
+        // 场景组合加分
+        // 搜"找工作" -> 映射出 "就业"、"招聘"
+        // 只要命中任意一个核心词，就给予高分，因为"找工作"本身意图很泛
+        const isJobSearch = matchedKeywords.some(k => ["就业", "招聘", "求职", "人才"].includes(k));
+        const isIdCard = matchedKeywords.some(k => k.includes("身份证") && ["换领", "补领", "到期"].includes(k));
         
-        if (hasIdentity && (hasTimeStatus || hasAction)) {
-            score += 600; // 极高分，置顶
-            matchReasons.unshift("🎯 意图精准匹配");
+        if (isJobSearch || isIdCard) {
+            score += 300;
+            matchReasons.unshift("🎯 意图匹配");
         }
 
         // 过滤逻辑
@@ -262,7 +257,7 @@ export default function Home() {
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mb-6">
             <h2 className="text-xl font-bold mb-4 text-center text-gray-800">{userRole === "自然人" ? "您想办理什么业务？" : "企业服务搜索"}</h2>
             <div className="flex gap-2">
-                <input type="text" placeholder="例如：身份证过期了" className="flex-1 pl-4 pr-4 py-3 bg-gray-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearch()} />
+                <input type="text" placeholder="例如：我想找工作" className="flex-1 pl-4 pr-4 py-3 bg-gray-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearch()} />
                 <button onClick={handleSearch} disabled={loading || csvData.length === 0} className="bg-blue-600 text-white px-5 rounded-xl font-medium">{loading ? "..." : "搜索"}</button>
             </div>
             {csvData.length === 0 && <p className="text-xs text-red-500 mt-2 text-center">⚠️ 请导入数据</p>}
@@ -277,11 +272,11 @@ export default function Home() {
                     <div className="flex flex-wrap gap-1.5">
                         {intent.keywords.map((k, i) => {
                             const source = intent.sourceMap?.[k];
-                            const isLocal = source === "知识库映射";
+                            const isLocal = source === "知识库";
                             const isAI = source === "AI推理";
                             return (
                                 <span key={i} className={`text-xs px-2 py-1 rounded-full border flex items-center gap-1 ${query.includes(k) ? 'bg-gray-100' : (isLocal ? 'bg-orange-50 text-orange-600 border-orange-100' : (isAI ? 'bg-purple-50 text-purple-600 border-purple-100' : 'bg-green-50 text-green-600'))}`}>
-                                    {(!query.includes(k)) && (isLocal ? <Building2 className="w-3 h-3"/> : <Zap className="w-3 h-3"/>)}
+                                    {(!query.includes(k)) && (isLocal ? <Briefcase className="w-3 h-3"/> : <Zap className="w-3 h-3"/>)}
                                     {k}
                                 </span>
                             )
@@ -306,7 +301,7 @@ export default function Home() {
                     {item._debugReasons && item._debugReasons.length > 0 && (
                         <div className="mt-2 pt-2 border-t border-gray-50 text-[10px] text-gray-500 flex flex-wrap gap-1">
                             {item._debugReasons.map((reason, rid) => (
-                                <span key={rid} className={`px-1 rounded ${reason.includes("精准") ? 'bg-blue-100 text-blue-700 font-bold' : (reason.includes("映射") ? 'bg-orange-100 text-orange-700' : 'bg-gray-100')}`}>{reason}</span>
+                                <span key={rid} className={`px-1 rounded ${reason.includes("意图") ? 'bg-blue-100 text-blue-700 font-bold' : (reason.includes("知识") ? 'bg-orange-100 text-orange-700' : 'bg-gray-100')}`}>{reason}</span>
                             ))}
                         </div>
                     )}
