@@ -2,7 +2,9 @@
 
 import { useState, useEffect } from "react";
 import Papa from "papaparse";
+// 引入图标库
 import { Search, Settings, Upload, Building2, User, Phone, MapPin, FileText, ChevronDown } from "lucide-react";
+// 引入数据，确保 app/lib/data.js 存在！
 import { DEFAULT_DATA } from "./lib/data";
 
 export default function Home() {
@@ -11,37 +13,48 @@ export default function Home() {
   const [isSearching, setIsSearching] = useState(false);
   const [intentAnalysis, setIntentAnalysis] = useState(null);
   
+  // 用户上下文
   const [userContext, setUserContext] = useState({
     role: "all",
     location: "all",
     channel: "Android", 
   });
 
+  // API 配置
   const [apiConfig, setApiConfig] = useState({
     apiKey: "",
     model: "llama3-70b-8192"
   });
   const [showConfig, setShowConfig] = useState(false);
 
+  // 初始化加载数据
   useEffect(() => {
-    if (DEFAULT_DATA && DEFAULT_DATA.length > 0) {
-      setCsvData(DEFAULT_DATA);
+    try {
+      if (DEFAULT_DATA && Array.isArray(DEFAULT_DATA)) {
+        setCsvData(DEFAULT_DATA);
+      } else {
+        console.warn("内置数据加载失败或格式错误");
+      }
+    } catch (e) {
+      console.error("数据导入错误:", e);
     }
   }, []);
 
+  // 搜索逻辑
   const handleSearch = async (e) => {
     e.preventDefault();
     const query = e.target.search.value;
-    if (!query || !apiConfig.apiKey) {
-      alert("请输入搜索内容并配置 API Key");
-      return;
-    }
+    
+    // 简单校验
+    if (!query) return alert("请输入搜索内容");
+    if (!apiConfig.apiKey) return alert("请点击右上角设置 Groq API Key");
 
     setIsSearching(true);
     setSearchResults([]);
     setIntentAnalysis(null);
 
     try {
+      // 调用后端 API
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -53,18 +66,21 @@ export default function Home() {
       });
       
       if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || "请求失败");
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `请求失败: ${res.status}`);
       }
+      
       const intent = await res.json();
       setIntentAnalysis(intent);
 
+      // 本地算分逻辑
       const results = csvData.map(item => {
         let score = 0;
         let reasons = [];
         const itemName = (item["事项名称"] || "").toString();
         const itemLoc = (item["所属市州单位"] || "").toString();
 
+        // 1. AI 关键词匹配
         let keywordMatched = false;
         if (intent.keywords && Array.isArray(intent.keywords)) {
             intent.keywords.forEach(kw => {
@@ -76,17 +92,20 @@ export default function Home() {
             if (keywordMatched) reasons.push("AI匹配");
         }
         
+        // 2. 精确匹配
         if (itemName.includes(query)) {
             score += 15;
             reasons.push("精确匹配");
         }
 
+        // 3. 角色过滤
         const targetRole = userContext.role !== "all" ? userContext.role : intent.role;
         if (targetRole && targetRole !== "null" && targetRole !== "all") {
              if (targetRole === "法人" && item["服务对象"] === "自然人") return { ...item, score: -100 };
              if (targetRole === "自然人" && item["服务对象"] === "法人") return { ...item, score: -100 };
         }
 
+        // 4. 地点匹配
         const targetLoc = userContext.location !== "all" ? userContext.location : intent.location;
         if (targetLoc && targetLoc !== "null" && targetLoc !== "all") {
             if (itemName.includes(targetLoc) || itemLoc.includes(targetLoc)) {
@@ -112,6 +131,7 @@ export default function Home() {
     }
   };
 
+  // CSV 导入逻辑
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -127,7 +147,7 @@ export default function Home() {
 
   return (
     <main className="container">
-      {/* 头部 */}
+      {/* 顶部栏 */}
       <div className="header">
         <div className="title-group">
           <h1>
@@ -137,7 +157,7 @@ export default function Home() {
             政务服务智能搜索
           </h1>
           <p className="subtitle">
-            已加载 <strong>{csvData.length}</strong> 条服务事项 · 支持自然语言语义匹配
+            已加载 <strong>{csvData.length}</strong> 条服务事项 · 纯 CSS 极速版
           </p>
         </div>
         <button 
@@ -159,7 +179,7 @@ export default function Home() {
               value={apiConfig.apiKey}
               onChange={e => setApiConfig({...apiConfig, apiKey: e.target.value})}
               className="form-input"
-              placeholder="gsk_..."
+              placeholder="请输入 gsk_ 开头的 Key"
             />
           </div>
            <div className="form-group">
