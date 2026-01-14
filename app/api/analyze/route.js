@@ -1,4 +1,3 @@
-// app/api/analyze/route.js
 import Groq from "groq-sdk";
 import { NextResponse } from "next/server";
 
@@ -6,15 +5,24 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req) {
   try {
-    const { query, apiKey, customBaseUrl, customModel } = await req.json();
+    const { query, config } = await req.json();
 
     if (!query) return NextResponse.json({ error: "请输入搜索内容" }, { status: 400 });
-    if (!apiKey) return NextResponse.json({ error: "请配置 Groq API Key" }, { status: 401 });
+    if (!config || !config.apiKey) return NextResponse.json({ error: "请配置 API Key" }, { status: 401 });
 
-    const groq = new Groq({ 
-      apiKey, 
-      baseURL: customBaseUrl || "https://api.groq.com/openai/v1" 
-    });
+    // 构建客户端配置
+    const clientConfig = {
+      apiKey: config.apiKey,
+      dangerouslyAllowBrowser: true // 允许在非Node环境运行(防止Vercel边缘函数报错)
+    };
+
+    // 如果是自定义模式，覆盖 baseURL
+    if (config.provider === 'custom' && config.baseUrl) {
+      clientConfig.baseURL = config.baseUrl;
+    } 
+    // 注意：Groq SDK 默认连接 https://api.groq.com/openai/v1，无需手动设置
+
+    const groq = new Groq(clientConfig);
 
     const systemPrompt = `
       你是一个政务服务意图分析专家。请分析用户搜索内容，提取关键信息并以 JSON 格式返回。
@@ -33,15 +41,14 @@ export async function POST(req) {
         { role: "system", content: systemPrompt },
         { role: "user", content: query },
       ],
-      model: customModel || "llama3-70b-8192",
+      model: config.model || "llama3-70b-8192", // 使用前端传来的模型名
       temperature: 0.1,
       response_format: { type: "json_object" },
     });
 
     let content = chatCompletion.choices[0]?.message?.content || "{}";
     
-    // --- 关键修复：清洗 Markdown 代码块 ---
-    // 有时候 AI 会返回 ```json { ... } ```，需要去掉 ```json 和 ```
+    // 清洗 Markdown 代码块
     content = content.replace(/```json\s*/g, "").replace(/```/g, "").trim();
     
     const intentData = JSON.parse(content);
@@ -49,6 +56,6 @@ export async function POST(req) {
 
   } catch (error) {
     console.error("API Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "模型调用失败: " + error.message }, { status: 500 });
   }
 }
