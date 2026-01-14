@@ -2,8 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Papa from "papaparse";
-import { Search, Settings, Upload, CheckCircle2, AlertCircle, Building2, User, Phone, MapPin, FileText } from "lucide-react";
-// 确保这里引用路径正确
+import { Search, Settings, Upload, Building2, User, Phone, MapPin, FileText, ChevronDown } from "lucide-react";
 import { DEFAULT_DATA } from "./lib/data";
 
 export default function Home() {
@@ -16,19 +15,15 @@ export default function Home() {
     role: "all",
     location: "all",
     channel: "Android", 
-    useSatisfaction: false, 
   });
 
   const [apiConfig, setApiConfig] = useState({
     apiKey: "",
-    baseUrl: "", 
     model: "llama3-70b-8192"
   });
   const [showConfig, setShowConfig] = useState(false);
 
-  // 初始化加载数据
   useEffect(() => {
-    // 简单的数据完整性检查
     if (DEFAULT_DATA && DEFAULT_DATA.length > 0) {
       setCsvData(DEFAULT_DATA);
     }
@@ -53,7 +48,6 @@ export default function Home() {
         body: JSON.stringify({
           query,
           apiKey: apiConfig.apiKey,
-          customBaseUrl: apiConfig.baseUrl,
           customModel: apiConfig.model
         }),
       });
@@ -71,7 +65,6 @@ export default function Home() {
         const itemName = (item["事项名称"] || "").toString();
         const itemLoc = (item["所属市州单位"] || "").toString();
 
-        // 关键词匹配
         let keywordMatched = false;
         if (intent.keywords && Array.isArray(intent.keywords)) {
             intent.keywords.forEach(kw => {
@@ -80,23 +73,20 @@ export default function Home() {
                     keywordMatched = true;
                 }
             });
-            if (keywordMatched) reasons.push("AI关键词匹配");
+            if (keywordMatched) reasons.push("AI匹配");
         }
         
-        // 原始查询匹配
         if (itemName.includes(query)) {
             score += 15;
             reasons.push("精确匹配");
         }
 
-        // 角色过滤
         const targetRole = userContext.role !== "all" ? userContext.role : intent.role;
         if (targetRole && targetRole !== "null" && targetRole !== "all") {
              if (targetRole === "法人" && item["服务对象"] === "自然人") return { ...item, score: -100 };
              if (targetRole === "自然人" && item["服务对象"] === "法人") return { ...item, score: -100 };
         }
 
-        // 地域匹配
         const targetLoc = userContext.location !== "all" ? userContext.location : intent.location;
         if (targetLoc && targetLoc !== "null" && targetLoc !== "all") {
             if (itemName.includes(targetLoc) || itemLoc.includes(targetLoc)) {
@@ -130,69 +120,68 @@ export default function Home() {
       skipEmptyLines: true,
       complete: (results) => {
         setCsvData(results.data);
-        alert(`已导入 ${results.data.length} 条外部数据`);
+        alert(`已导入 ${results.data.length} 条数据`);
       }
     });
   };
 
   return (
-    <main className="max-w-4xl mx-auto p-4 md:p-8 space-y-6 bg-slate-50 min-h-screen font-sans text-slate-900">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-200 pb-4 gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-800 flex items-center gap-2">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white">
-              <FileText size={20} />
-            </div>
+    <main className="container">
+      {/* 头部 */}
+      <div className="header">
+        <div className="title-group">
+          <h1>
+            <span className="icon-box">
+              <FileText size={24} />
+            </span>
             政务服务智能搜索
           </h1>
-          <p className="text-sm text-slate-500 mt-1">
-            已加载 {csvData.length} 条服务事项 · 支持自然语言语义匹配
+          <p className="subtitle">
+            已加载 <strong>{csvData.length}</strong> 条服务事项 · 支持自然语言语义匹配
           </p>
         </div>
         <button 
           onClick={() => setShowConfig(!showConfig)}
-          className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition ${showConfig ? 'bg-blue-100 text-blue-700' : 'bg-white border hover:bg-slate-50'}`}
+          className="btn-config"
         >
           <Settings className="w-4 h-4" />
           API 设置
         </button>
       </div>
 
+      {/* 配置面板 */}
       {showConfig && (
-        <div className="bg-white p-6 rounded-xl shadow-lg border border-blue-100 animate-in fade-in slide-in-from-top-2">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Groq API Key</label>
-              <input 
-                type="password" 
-                value={apiConfig.apiKey}
-                onChange={e => setApiConfig({...apiConfig, apiKey: e.target.value})}
-                className="w-full p-2.5 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                placeholder="gsk_..."
-              />
-            </div>
-             <div>
-              <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Model</label>
-              <select 
-                value={apiConfig.model}
-                onChange={e => setApiConfig({...apiConfig, model: e.target.value})}
-                className="w-full p-2.5 border rounded-lg text-sm bg-white"
-              >
-                <option value="llama3-70b-8192">Llama3-70b (推荐)</option>
-                <option value="mixtral-8x7b-32768">Mixtral-8x7b</option>
-              </select>
-            </div>
+        <div className="config-panel">
+          <div className="form-group">
+            <label>Groq API Key</label>
+            <input 
+              type="password" 
+              value={apiConfig.apiKey}
+              onChange={e => setApiConfig({...apiConfig, apiKey: e.target.value})}
+              className="form-input"
+              placeholder="gsk_..."
+            />
+          </div>
+           <div className="form-group">
+            <label>模型选择</label>
+            <select 
+              value={apiConfig.model}
+              onChange={e => setApiConfig({...apiConfig, model: e.target.value})}
+              className="form-select"
+            >
+              <option value="llama3-70b-8192">Llama3-70b (推荐)</option>
+              <option value="mixtral-8x7b-32768">Mixtral-8x7b</option>
+            </select>
           </div>
         </div>
       )}
 
-      <div className="bg-white p-4 rounded-xl shadow-sm border grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="space-y-1">
-          <label className="text-xs font-bold text-slate-400 flex items-center gap-1 uppercase">
-            <User className="w-3 h-3"/> 用户角色
-          </label>
+      {/* 筛选工具栏 */}
+      <div className="filter-bar">
+        <div className="form-group">
+          <label><User size={12}/> 用户角色</label>
           <select 
-            className="w-full text-sm font-medium text-slate-700 bg-transparent border-none p-0 focus:ring-0 cursor-pointer"
+            className="form-select"
             value={userContext.role}
             onChange={(e) => setUserContext({...userContext, role: e.target.value})}
           >
@@ -202,12 +191,10 @@ export default function Home() {
           </select>
         </div>
 
-        <div className="space-y-1">
-          <label className="text-xs font-bold text-slate-400 flex items-center gap-1 uppercase">
-            <MapPin className="w-3 h-3"/> 当前定位
-          </label>
+        <div className="form-group">
+          <label><MapPin size={12}/> 当前定位</label>
           <select 
-            className="w-full text-sm font-medium text-slate-700 bg-transparent border-none p-0 focus:ring-0 cursor-pointer"
+            className="form-select"
             value={userContext.location}
             onChange={(e) => setUserContext({...userContext, location: e.target.value})}
           >
@@ -217,129 +204,4 @@ export default function Home() {
             <option value="株洲">株洲市</option>
             <option value="湘潭">湘潭市</option>
             <option value="衡阳">衡阳市</option>
-            <option value="邵阳">邵阳市</option>
-            <option value="岳阳">岳阳市</option>
-            <option value="常德">常德市</option>
-            <option value="张家界">张家界市</option>
-            <option value="益阳">益阳市</option>
-            <option value="郴州">郴州市</option>
-            <option value="永州">永州市</option>
-            <option value="娄底">娄底市</option>
-            <option value="湘西">湘西州</option>
-          </select>
-        </div>
-
-        <div className="space-y-1">
-          <label className="text-xs font-bold text-slate-400 flex items-center gap-1 uppercase">
-            <Phone className="w-3 h-3"/> 终端渠道
-          </label>
-          <select 
-            className="w-full text-sm font-medium text-slate-700 bg-transparent border-none p-0 focus:ring-0 cursor-pointer"
-            value={userContext.channel}
-            onChange={(e) => setUserContext({...userContext, channel: e.target.value})}
-          >
-            <option value="Android">Android</option>
-            <option value="iOS">iOS</option>
-            <option value="WeChat">微信小程序</option>
-          </select>
-        </div>
-
-        <div className="flex justify-end items-center">
-             <label className="cursor-pointer flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium bg-blue-50 px-3 py-1.5 rounded-lg transition">
-                <Upload className="w-3 h-3"/>
-                导入 CSV
-                <input type="file" className="hidden" accept=".csv" onChange={handleFileUpload}/>
-             </label>
-        </div>
-      </div>
-
-      <div className="relative group">
-        <div className="absolute -inset-1 bg-gradient-to-r from-blue-200 to-indigo-200 rounded-2xl blur opacity-30 group-hover:opacity-60 transition duration-200"></div>
-        <form onSubmit={handleSearch} className="relative bg-white rounded-xl shadow-lg flex items-center p-2">
-          <Search className="ml-4 text-slate-400 w-6 h-6 shrink-0" />
-          <input
-            name="search"
-            type="text"
-            placeholder="例如：'我想查怀化的公积金'..."
-            className="w-full p-3 pl-3 text-lg outline-none text-slate-700 placeholder:text-slate-400"
-            disabled={isSearching}
-          />
-          <button 
-            type="submit" 
-            disabled={isSearching}
-            className="bg-blue-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-blue-700 disabled:bg-slate-300 transition shrink-0"
-          >
-            {isSearching ? "分析中..." : "搜索"}
-          </button>
-        </form>
-      </div>
-
-      {intentAnalysis && (
-        <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl flex flex-wrap gap-4 text-sm text-indigo-900 items-center animate-in fade-in slide-in-from-top-1">
-          <div className="font-bold flex items-center gap-2">
-             <div className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse"/>
-             AI 意图:
-          </div>
-          <div className="flex gap-2 items-center flex-wrap">
-            <span className="text-indigo-400 text-xs uppercase font-bold">关键词</span>
-            {intentAnalysis.keywords?.map(k => (
-                <span key={k} className="bg-white px-2 py-0.5 rounded border border-indigo-100 shadow-sm text-xs">{k}</span>
-            ))}
-          </div>
-          {intentAnalysis.location && intentAnalysis.location !== "null" && (
-             <div className="flex gap-2 items-center">
-                <span className="text-indigo-400 text-xs uppercase font-bold">地点</span>
-                <span className="bg-white px-2 py-0.5 rounded border border-indigo-100 shadow-sm font-medium">{intentAnalysis.location}</span>
-             </div>
-          )}
-        </div>
-      )}
-
-      <div className="space-y-3">
-        {searchResults.length > 0 ? (
-           searchResults.map((item, idx) => (
-            <div key={idx} className="bg-white p-4 rounded-xl border border-slate-100 hover:shadow-md hover:border-blue-200 transition group cursor-pointer">
-              <div className="flex justify-between items-start gap-4">
-                <div className="flex-1">
-                   <h3 className="text-lg font-bold text-slate-800 group-hover:text-blue-600 mb-1">
-                     {item["事项名称"]}
-                   </h3>
-                   <div className="flex flex-wrap gap-2 mt-2 text-xs text-slate-500">
-                      <span className="flex items-center gap-1 bg-slate-50 px-2 py-1 rounded text-slate-600">
-                        <Building2 className="w-3 h-3"/> {item["所属市州单位"]}
-                      </span>
-                      <span className="flex items-center gap-1 bg-slate-50 px-2 py-1 rounded text-slate-600">
-                        <User className="w-3 h-3"/> {item["服务对象"]}
-                      </span>
-                      {item.matchReasons?.map((reason, i) => (
-                          <span key={i} className="px-2 py-1 rounded bg-green-50 text-green-700 border border-green-100">
-                              {reason}
-                          </span>
-                      ))}
-                   </div>
-                </div>
-                <div className="flex flex-col items-end shrink-0">
-                    <span className="text-xs text-slate-300 font-mono mb-1">{item["事项编码"]}</span>
-                    <div className="w-10 h-10 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-sm">
-                        Go
-                    </div>
-                </div>
-              </div>
-            </div>
-           ))
-        ) : (
-          !isSearching && (
-            <div className="text-center py-20">
-               <div className="inline-flex items-center justify-center w-16 h-16 bg-slate-100 rounded-full mb-4">
-                  <Search className="w-8 h-8 text-slate-300"/>
-               </div>
-               <p className="text-slate-400 mt-2 max-w-sm mx-auto">
-                 {intentAnalysis ? "未找到相关结果，请尝试切换城市或简化搜索词。" : "请输入上方搜索框开始体验"}
-               </p>
-            </div>
-          )
-        )}
-      </div>
-    </main>
-  );
-}
+            <option 
