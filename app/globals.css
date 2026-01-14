@@ -25,14 +25,12 @@ body {
   padding: 20px;
 }
 
-/* 布局容器 */
 .container {
   max-width: 900px;
   margin: 0 auto;
   min-height: 100vh;
 }
 
-/* 顶部标题栏 */
 .header {
   display: flex;
   justify-content: space-between;
@@ -89,17 +87,49 @@ body {
   background-color: #f1f5f9;
 }
 
-/* 配置面板 */
+/* --- 新增：配置面板样式 --- */
 .config-panel {
   background: var(--white);
-  padding: 20px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
   margin-bottom: 20px;
   box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.tabs {
+  display: flex;
+  background: #f1f5f9;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  flex: 1;
+  padding: 12px;
+  text-align: center;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-sub);
+  background: transparent;
+  border: none;
+}
+
+.tab.active {
+  background: var(--white);
+  color: var(--primary);
+  border-top: 2px solid var(--primary);
+}
+
+.config-content {
+  padding: 20px;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 15px;
+}
+
+.config-full-width {
+  grid-column: span 2;
 }
 
 .form-group label {
@@ -299,9 +329,11 @@ body {
   color: var(--text-sub);
 }
 
-/* 响应式调整 */
 @media (max-width: 640px) {
-  .config-panel, .filter-bar {
+  .config-content, .filter-bar {
     grid-template-columns: 1fr;
+  }
+  .config-full-width {
+    grid-column: span 1;
   }
 }
