@@ -204,4 +204,115 @@ export default function Home() {
             <option value="株洲">株洲市</option>
             <option value="湘潭">湘潭市</option>
             <option value="衡阳">衡阳市</option>
-            <option 
+            <option value="邵阳">邵阳市</option>
+            <option value="岳阳">岳阳市</option>
+            <option value="常德">常德市</option>
+            <option value="张家界">张家界市</option>
+            <option value="益阳">益阳市</option>
+            <option value="郴州">郴州市</option>
+            <option value="永州">永州市</option>
+            <option value="娄底">娄底市</option>
+            <option value="湘西">湘西州</option>
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label><Phone size={12}/> 终端渠道</label>
+          <select 
+            className="form-select"
+            value={userContext.channel}
+            onChange={(e) => setUserContext({...userContext, channel: e.target.value})}
+          >
+            <option value="Android">Android</option>
+            <option value="iOS">iOS</option>
+            <option value="WeChat">微信小程序</option>
+          </select>
+        </div>
+
+        <div className="form-group" style={{display:'flex', alignItems:'flex-end'}}>
+             <label className="upload-btn">
+                <Upload size={14}/>
+                导入 CSV
+                <input type="file" style={{display:'none'}} accept=".csv" onChange={handleFileUpload}/>
+             </label>
+        </div>
+      </div>
+
+      {/* 搜索框 */}
+      <div className="search-wrapper">
+        <form onSubmit={handleSearch} className="search-box">
+          <Search style={{marginLeft: 10, color:'#94a3b8'}} />
+          <input
+            name="search"
+            type="text"
+            placeholder="例如：'我想查一下怀化的公积金'..."
+            className="search-input"
+            disabled={isSearching}
+          />
+          <button 
+            type="submit" 
+            disabled={isSearching}
+            className="search-btn"
+          >
+            {isSearching ? "分析中..." : "智能搜索"}
+          </button>
+        </form>
+      </div>
+
+      {/* 意图分析结果 */}
+      {intentAnalysis && (
+        <div className="ai-debug">
+          <strong>⚡ AI 分析结果:</strong>
+          <span>关键词:</span>
+          {intentAnalysis.keywords?.map(k => (
+              <span key={k} className="tag">{k}</span>
+          ))}
+          {intentAnalysis.location && intentAnalysis.location !== "null" && (
+             <>
+                <span>地点:</span>
+                <span className="tag">{intentAnalysis.location}</span>
+             </>
+          )}
+        </div>
+      )}
+
+      {/* 结果列表 */}
+      <div className="result-list">
+        {searchResults.length > 0 ? (
+           searchResults.map((item, idx) => (
+            <div key={idx} className="result-card">
+              <div>
+                 <h3 className="card-title">{item["事项名称"]}</h3>
+                 <div className="card-tags">
+                    <span className="meta-tag">
+                      <Building2 size={12}/> {item["所属市州单位"]}
+                    </span>
+                    <span className="meta-tag">
+                      <User size={12}/> {item["服务对象"]}
+                    </span>
+                    {item.matchReasons?.map((reason, i) => (
+                        <span key={i} className="meta-tag match-reason">
+                            {reason}
+                        </span>
+                    ))}
+                 </div>
+              </div>
+              <div style={{textAlign:'right'}}>
+                  <div className="card-code">{item["事项编码"]?.slice(0,8)}</div>
+                  <div style={{marginTop: 5, color:'#2563eb'}}>
+                      <ChevronDown />
+                  </div>
+              </div>
+            </div>
+           ))
+        ) : (
+          !isSearching && (
+            <div className="empty-state">
+               <p>{intentAnalysis ? "未找到匹配结果，请尝试简化描述" : "准备就绪，请输入上方搜索框"}</p>
+            </div>
+          )
+        )}
+      </div>
+    </main>
+  );
+}
