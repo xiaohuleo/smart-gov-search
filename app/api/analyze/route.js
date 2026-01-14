@@ -1,9 +1,8 @@
-// app/api/analyze/route.ts
+// app/api/analyze/route.js
 import { Groq } from "groq-sdk";
 import { NextResponse } from "next/server";
 
-// 初始化 Groq (API Key 将从前端传过来，方便Demo演示，正式环境应在 .env)
-export async function POST(req: Request) {
+export async function POST(req) {
   try {
     const { query, apiKey, baseUrl } = await req.json();
 
@@ -13,7 +12,6 @@ export async function POST(req: Request) {
 
     const groq = new Groq({
       apiKey: apiKey,
-      // 如果需要自定义其它兼容 OpenAI 协议的 API，可在此处配置 baseURL
       baseURL: baseUrl || "https://api.groq.com/openai/v1",
     });
 
@@ -37,7 +35,7 @@ export async function POST(req: Request) {
 
     const completion = await groq.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
-      model: "llama3-70b-8192", // 使用 Groq 提供的快速模型
+      model: "llama3-70b-8192",
       temperature: 0.1,
       response_format: { type: "json_object" },
     });
@@ -51,7 +49,6 @@ export async function POST(req: Request) {
     console.error("Groq API Error:", error);
     return NextResponse.json(
       { 
-        // 降级策略：如果AI挂了，直接把用户输入当关键词
         keywords: [], 
         target: "all", 
         action: "all",
