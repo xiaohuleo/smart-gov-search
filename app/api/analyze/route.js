@@ -1,4 +1,5 @@
-import { Groq } from "groq-sdk";
+// app/api/analyze/route.js
+import Groq from "groq-sdk";
 import { NextResponse } from "next/server";
 
 export const dynamic = 'force-dynamic';
@@ -10,30 +11,21 @@ export async function POST(req) {
     if (!query) return NextResponse.json({ error: "请输入搜索内容" }, { status: 400 });
     if (!apiKey) return NextResponse.json({ error: "请配置 Groq API Key" }, { status: 401 });
 
-    const groq = new Groq({ apiKey, baseURL: customBaseUrl });
+    const groq = new Groq({ 
+      apiKey, 
+      baseURL: customBaseUrl || "https://api.groq.com/openai/v1" 
+    });
 
-    // 核心优化：让 AI 扩展关键词，以匹配政务服务的官方名称
     const systemPrompt = `
-      你是一个中国政务服务搜索意图分析专家。你的任务是将用户的口语化需求转换为标准的政务服务关键词。
+      你是一个政务服务意图分析专家。请分析用户搜索内容，提取关键信息并以 JSON 格式返回。
       
-      请分析用户输入，返回一个 JSON 对象（严禁包含 Markdown 格式）：
-      {
-        "keywords": ["核心词1", "核心词2", "同义词1", "同义词2"], 
-        "location": "城市名" | "null", // 如果用户提到了具体的湖南省内城市（如长沙、怀化、邵阳等）
-        "role": "自然人" | "法人" | "null"
-      }
-
-      示例 1:
-      用户: "我要给小孩打针"
-      返回: { "keywords": ["疫苗", "接种", "免疫", "预防接种"], "location": "null", "role": "自然人" }
-
-      示例 2:
-      用户: "怀化的房子怎么查"
-      返回: { "keywords": ["不动产", "房产", "楼盘", "二手房", "网签"], "location": "怀化", "role": "自然人" }
+      规则：
+      1. keywords: 提取核心动作和名词，如果有同义词请一并列出。
+      2. location: 如果提到具体湖南省内的城市或区县（如长沙、怀化、邵阳），请提取，否则为 "null"。
+      3. role: 如果明确提到"公司"、"企业"返回 "法人"，提到"个人"、"我"返回 "自然人"，否则为 "null"。
       
-      示例 3:
-      用户: "公司营业执照丢了"
-      返回: { "keywords": ["营业执照", "补领", "换发", "遗失"], "location": "null", "role": "法人" }
+      返回格式示例（纯JSON，不要Markdown）：
+      { "keywords": ["疫苗", "接种"], "location": "null", "role": "自然人" }
     `;
 
     const chatCompletion = await groq.chat.completions.create({
@@ -46,11 +38,17 @@ export async function POST(req) {
       response_format: { type: "json_object" },
     });
 
-    const content = chatCompletion.choices[0]?.message?.content;
-    const intentData = JSON.parse(content || "{}");
+    let content = chatCompletion.choices[0]?.message?.content || "{}";
+    
+    // --- 关键修复：清洗 Markdown 代码块 ---
+    // 有时候 AI 会返回 ```json { ... } ```，需要去掉 ```json 和 ```
+    content = content.replace(/```json\s*/g, "").replace(/```/g, "").trim();
+    
+    const intentData = JSON.parse(content);
     return NextResponse.json(intentData);
 
   } catch (error) {
+    console.error("API Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
