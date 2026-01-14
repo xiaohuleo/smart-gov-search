@@ -3,7 +3,7 @@
 
 import { useState } from "react";
 import Papa from "papaparse";
-import { Search, Upload, Settings, Building2, User, Star, MapPin, Smartphone, Server } from "lucide-react";
+import { Search, Upload, Settings, Building2, User, Star, MapPin, Smartphone, Server, Clock } from "lucide-react";
 
 export default function Home() {
   // --- 状态管理 ---
@@ -12,11 +12,12 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
   const [intent, setIntent] = useState(null);
+  const [searchTime, setSearchTime] = useState(0); // 新增：搜索耗时
 
   // --- 模拟用户上下文 & API配置 ---
   const [apiKey, setApiKey] = useState("");
-  const [apiBaseUrl, setApiBaseUrl] = useState("https://api.groq.com/openai/v1"); // 默认 Groq 地址
-  const [apiModel, setApiModel] = useState("llama3-70b-8192"); // 默认 Groq 模型
+  const [apiBaseUrl, setApiBaseUrl] = useState("https://api.groq.com/openai/v1");
+  const [apiModel, setApiModel] = useState("llama3-70b-8192");
   
   const [userRole, setUserRole] = useState("自然人");
   const [userCity, setUserCity] = useState("湖南省");
@@ -44,35 +45,50 @@ export default function Home() {
     if (!query || csvData.length === 0) return;
     setLoading(true);
     setResults([]);
+    setIntent(null);
+    const startTime = performance.now(); // 开始计时
 
     try {
-      // 1. 调用 AI 获取意图和扩展词
-      let currentIntent = { keywords: [query], target: "all", action: "all" };
+      // 1. 本地预处理：去除常见动词，作为兜底关键词
+      // 这样即使 AI 挂了，搜“我要办健康证”也能提取出“健康证”
+      const cleanQuery = query.replace(/我要|办理|查询|怎么|办|申请|在哪里|弄|去哪/g, "");
+      
+      // 2. 调用 AI 获取意图
+      let currentIntent = { keywords: [cleanQuery || query], target: "all", action: "all" };
       
       if (apiKey) {
-        const res = await fetch("/api/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          // 将配置的 URL 和 模型 传给后端
-          body: JSON.stringify({ query, apiKey, baseUrl: apiBaseUrl, model: apiModel }),
-        });
-        const data = await res.json();
-        if (!data.isFallback) {
-            currentIntent = data;
-        }
-        // 总是把原始搜索词加进去
-        if (!currentIntent.keywords.includes(query)) {
-            currentIntent.keywords.unshift(query);
+        try {
+            const res = await fetch("/api/analyze", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ query, apiKey, baseUrl: apiBaseUrl, model: apiModel }),
+            });
+            const data = await res.json();
+            if (!data.isFallback && data.keywords) {
+                currentIntent = data;
+            }
+        } catch (e) {
+            console.warn("AI Analysis failed, utilizing local fallback");
         }
       }
+
+      // 确保本地清洗过的词也在关键词列表里
+      if (cleanQuery && !currentIntent.keywords.includes(cleanQuery)) {
+          currentIntent.keywords.push(cleanQuery);
+      }
+      // 确保原始词也在，以防万一
+      if (!currentIntent.keywords.includes(query)) {
+          currentIntent.keywords.push(query);
+      }
+
       setIntent(currentIntent);
 
-      // 2. 本地评分与排序算法
+      // 3. 本地评分与排序算法
       const scoredResults = csvData.map((item) => {
         let score = 0;
         let matchReasons = [];
 
-        // 数据字段映射 (容错处理)
+        // 数据字段映射
         const itemName = item["事项名称"] || "";
         const itemShort = item["事项简称"] || "";
         const itemTags = item["事项标签"] || "";
@@ -80,12 +96,22 @@ export default function Home() {
         const itemUnit = item["所属市州单位"] || "";
         const itemChannel = item["发布渠道"] || "";
 
-        // A. 基础文本匹配
+        // A. 文本匹配 (核心修复：双向匹配)
+        // 之前的逻辑是 Item 包含 Keyword。现在增加：如果 Keyword 很长且包含 Item，也算命中。
         const textToSearch = `${itemName} ${itemShort} ${itemTags}`;
+        
         currentIntent.keywords.forEach((kw) => {
+          if (!kw) return;
+          // 情况1：事项名称里包含关键词 (例：事项="从业人员健康证明", 关键词="健康")
           if (textToSearch.includes(kw)) {
             score += 100;
+            // 完全相等加分
             if (itemName === kw) score += 50;
+          } 
+          // 情况2：关键词包含事项名称 (例：事项="健康证", 关键词="我要办健康证")
+          // 注意：这需要防止关键词太短导致误判，所以限制kw长度
+          else if (kw.length > 2 && kw.includes(itemName)) {
+             score += 80;
           }
         });
 
@@ -99,27 +125,26 @@ export default function Home() {
             score -= 50; 
         }
 
-        // C. 地域匹配 (精确匹配市州)
+        // C. 地域匹配
         if (itemUnit) {
             if (itemUnit.includes(userCity)) {
-                score += 50; // 完全匹配当前城市
+                score += 50; 
                 matchReasons.push(`本地: ${userCity}`);
             } else if (userCity !== "湖南省" && itemUnit.includes("湖南省")) {
-                score += 20; // 即使选了具体城市，省级服务也是能办的，但分低一点
+                score += 20; 
             } else if (userCity === "湖南省" && itemUnit.includes("湖南省")) {
-                score += 40; // 选了全省，且服务也是全省
+                score += 40; 
             }
         }
 
         // D. 渠道匹配
         if (itemChannel && !itemChannel.includes(userChannel) && !itemChannel.includes("全部")) {
-            score = -1; // 渠道不支持，直接过滤
+            score = -1; 
         }
 
         // E. 满意度/高频
         if (enableSatisfaction && item["满意度"]) {
-            const sat = parseFloat(item["满意度"]) || 0;
-            score += sat * 0.5;
+            score += (parseFloat(item["满意度"]) || 0) * 0.5;
         }
         if (item["是否高频事项"] === "是") {
             score += 15;
@@ -129,7 +154,7 @@ export default function Home() {
         return { item, score, matchReasons };
       });
 
-      // 3. 过滤并排序
+      // 4. 过滤并排序
       const finalResults = scoredResults
         .filter((r) => r.score > 0)
         .sort((a, b) => b.score - a.score)
@@ -139,8 +164,10 @@ export default function Home() {
 
     } catch (err) {
       console.error(err);
-      alert("搜索出错，请检查API Key配置或网络");
+      alert("搜索出错");
     } finally {
+      const endTime = performance.now();
+      setSearchTime((endTime - startTime).toFixed(0)); // 计算耗时(毫秒)
       setLoading(false);
     }
   };
@@ -321,22 +348,35 @@ export default function Home() {
             )}
         </div>
 
-        {/* 意图识别结果展示 */}
-        {intent && (
+        {/* 意图识别结果 & 统计展示 */}
+        {(intent || results.length > 0) && (
             <div className="mb-4 px-2 animate-in fade-in slide-in-from-bottom-2">
-                <div className="text-[10px] text-gray-400 mb-1 flex items-center justify-between">
-                    <span>AI 意图识别 ({apiModel})</span>
-                    <span className="bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded font-medium">
-                        {intent.target === "all" ? "全对象" : intent.target}
-                    </span>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                    {intent.keywords.map((k, i) => (
-                        <span key={i} className={`text-xs px-2 py-1 rounded-full border ${k === query ? 'bg-gray-100 text-gray-600 border-gray-200' : 'bg-blue-50 text-blue-600 border-blue-100'}`}>
-                            {k}
+                
+                {/* 耗时与结果统计 */}
+                <div className="flex justify-between items-center mb-2">
+                     <div className="flex items-center gap-1 text-[10px] text-gray-400">
+                        <Clock className="w-3 h-3" />
+                        <span>耗时 {searchTime}ms</span>
+                        <span className="mx-1">|</span>
+                        <span>找到 {results.length} 条服务</span>
+                     </div>
+                     {intent && (
+                        <span className="text-[10px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded font-medium">
+                            {intent.target === "all" ? "全对象" : intent.target}
                         </span>
-                    ))}
+                     )}
                 </div>
+
+                {/* 关键词展示 */}
+                {intent && (
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                        {intent.keywords.map((k, i) => (
+                            <span key={i} className={`text-xs px-2 py-1 rounded-full border ${k === query ? 'bg-gray-100 text-gray-600 border-gray-200' : 'bg-blue-50 text-blue-600 border-blue-100'}`}>
+                                {k}
+                            </span>
+                        ))}
+                    </div>
+                )}
             </div>
         )}
 
