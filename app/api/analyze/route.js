@@ -4,33 +4,32 @@ import { NextResponse } from "next/server";
 
 export async function POST(req) {
   try {
-    // 接收前端传来的自定义参数：baseUrl 和 model
     const { query, apiKey, baseUrl, model } = await req.json();
 
     if (!apiKey) {
       return NextResponse.json({ error: "Missing API Key" }, { status: 400 });
     }
 
-    // 初始化客户端
-    // 注意：虽然库名叫 Groq，但只要兼容 OpenAI 协议的 API (如 DeepSeek, Moonshot) 都可以通过修改 baseURL 调用
     const client = new Groq({
       apiKey: apiKey,
-      baseURL: baseUrl || "https://api.groq.com/openai/v1", // 默认为 Groq
+      baseURL: baseUrl || "https://api.groq.com/openai/v1",
     });
 
+    // 优化后的 Prompt：强调同义词扩展和动词剔除
     const prompt = `
-    你是一个政务搜索专家。用户正在搜索政务服务。
-    用户输入: "${query}"
+    你是一个政务搜索意图分析专家。用户输入: "${query}"
     
-    任务：
-    1. 提取核心关键词。
-    2. 扩展同义词（例如：用户搜"健康证"，扩展出"从业人员健康检查"、"健康证明"）。
-    3. 识别目标对象（自然人/法人/全部）。
-    4. 识别意图动作（查询/办理/预约/全部）。
+    请执行以下任务：
+    1. 【核心提取】：去除“我要办”、“查询”、“怎么弄”、“在哪里”等动词和虚词，提取核心名词（例如：“我要办健康证” -> “健康证”）。
+    2. 【同义词扩展】：非常重要！根据核心名词，预测政府公文中的正式叫法。
+       - 例子：搜“健康证” -> 扩展出“从业人员健康检查”、“预防性健康检查”、“健康证明”。
+       - 例子：搜“开店” -> 扩展出“经营许可”、“营业执照”。
+    3. 【对象识别】：分析是个人业务还是企业业务。
+    4. 【动作识别】：分析是办理、查询还是预约。
     
-    请严格只返回以下JSON格式，不要包含任何Markdown或其他文字：
+    请严格只返回JSON格式：
     {
-      "keywords": ["关键词1", "关键词2", "同义词1"],
+      "keywords": ["核心名词", "正式叫法1", "正式叫法2"],
       "target": "自然人" | "法人" | "all",
       "action": "办理" | "查询" | "all"
     }
@@ -38,8 +37,8 @@ export async function POST(req) {
 
     const completion = await client.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
-      model: model || "llama3-70b-8192", // 如果前端没传模型，默认用 Groq 的 Llama3
-      temperature: 0.1,
+      model: model || "llama3-70b-8192",
+      temperature: 0.2, // 稍微提高一点创造性以生成同义词
       response_format: { type: "json_object" },
     });
 
