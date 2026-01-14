@@ -4,15 +4,18 @@ import { NextResponse } from "next/server";
 
 export async function POST(req) {
   try {
-    const { query, apiKey, baseUrl } = await req.json();
+    // 接收前端传来的自定义参数：baseUrl 和 model
+    const { query, apiKey, baseUrl, model } = await req.json();
 
     if (!apiKey) {
       return NextResponse.json({ error: "Missing API Key" }, { status: 400 });
     }
 
-    const groq = new Groq({
+    // 初始化客户端
+    // 注意：虽然库名叫 Groq，但只要兼容 OpenAI 协议的 API (如 DeepSeek, Moonshot) 都可以通过修改 baseURL 调用
+    const client = new Groq({
       apiKey: apiKey,
-      baseURL: baseUrl || "https://api.groq.com/openai/v1",
+      baseURL: baseUrl || "https://api.groq.com/openai/v1", // 默认为 Groq
     });
 
     const prompt = `
@@ -33,9 +36,9 @@ export async function POST(req) {
     }
     `;
 
-    const completion = await groq.chat.completions.create({
+    const completion = await client.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
-      model: "llama3-70b-8192",
+      model: model || "llama3-70b-8192", // 如果前端没传模型，默认用 Groq 的 Llama3
       temperature: 0.1,
       response_format: { type: "json_object" },
     });
@@ -46,7 +49,7 @@ export async function POST(req) {
     return NextResponse.json(JSON.parse(content));
 
   } catch (error) {
-    console.error("Groq API Error:", error);
+    console.error("API Error:", error);
     return NextResponse.json(
       { 
         keywords: [], 
