@@ -184,4 +184,215 @@ export default function Home() {
                 </div>
                 
                 <div className="grid grid-cols-2 gap-2">
-                    
+                    <div>
+                        <label className="text-[10px] text-gray-500 block mb-1">API Key</label>
+                        <input 
+                            type="password" 
+                            value={apiKey}
+                            onChange={(e) => setApiKey(e.target.value)}
+                            placeholder="sk-..."
+                            className="w-full border p-1.5 rounded text-xs bg-white"
+                        />
+                    </div>
+                    <div>
+                        <label className="text-[10px] text-gray-500 block mb-1">模型名称 (Model)</label>
+                        <input 
+                            type="text" 
+                            value={apiModel}
+                            onChange={(e) => setApiModel(e.target.value)}
+                            placeholder="例如: llama3-8b-8192"
+                            className="w-full border p-1.5 rounded text-xs bg-white"
+                        />
+                    </div>
+                </div>
+            </div>
+
+            {/* 2. 数据导入 */}
+            <div>
+              <label className="text-xs font-bold block mb-1">政务数据源 (CSV)</label>
+              <div className="relative border border-dashed border-gray-300 rounded-lg p-3 bg-blue-50 text-center hover:bg-blue-100 transition cursor-pointer">
+                 <input 
+                    type="file" 
+                    accept=".csv" 
+                    onChange={handleFileUpload} 
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                 />
+                 <div className="flex items-center justify-center gap-2 text-sm text-blue-600 font-medium">
+                    <Upload className="w-4 h-4" />
+                    {csvData.length > 0 ? `已加载 ${csvData.length} 条事项` : "点击导入 CSV 文件"}
+                 </div>
+              </div>
+            </div>
+
+            {/* 3. 用户画像模拟 */}
+            <div className="grid grid-cols-2 gap-3">
+                <div>
+                    <label className="text-xs font-bold block mb-1">用户角色</label>
+                    <div className="relative">
+                        <User className="w-3 h-3 absolute left-2 top-2.5 text-gray-400" />
+                        <select className="w-full border p-2 pl-7 rounded text-sm bg-white" value={userRole} onChange={(e) => setUserRole(e.target.value)}>
+                            <option value="自然人">自然人 (个人)</option>
+                            <option value="法人">法人 (企业)</option>
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <label className="text-xs font-bold block mb-1">定位区域</label>
+                    <div className="relative">
+                        <MapPin className="w-3 h-3 absolute left-2 top-2.5 text-gray-400" />
+                        <select className="w-full border p-2 pl-7 rounded text-sm bg-white" value={userCity} onChange={(e) => setUserCity(e.target.value)}>
+                            <option value="湖南省">湖南省 (本级)</option>
+                            <option value="长沙市">长沙市</option>
+                            <option value="株洲市">株洲市</option>
+                            <option value="湘潭市">湘潭市</option>
+                            <option value="衡阳市">衡阳市</option>
+                            <option value="邵阳市">邵阳市</option>
+                            <option value="岳阳市">岳阳市</option>
+                            <option value="常德市">常德市</option>
+                            <option value="张家界市">张家界市</option>
+                            <option value="益阳市">益阳市</option>
+                            <option value="郴州市">郴州市</option>
+                            <option value="永州市">永州市</option>
+                            <option value="怀化市">怀化市</option>
+                            <option value="娄底市">娄底市</option>
+                            <option value="湘西土家族苗族自治州">湘西自治州</option>
+                        </select>
+                    </div>
+                </div>
+                 <div className="col-span-2">
+                    <label className="text-xs font-bold block mb-1">当前终端</label>
+                    <div className="relative">
+                        <Smartphone className="w-3 h-3 absolute left-2 top-2.5 text-gray-400" />
+                        <select className="w-full border p-2 pl-7 rounded text-sm bg-white" value={userChannel} onChange={(e) => setUserChannel(e.target.value)}>
+                            <option value="Android">Android App</option>
+                            <option value="iOS">iOS App</option>
+                            <option value="HarmonyOS">HarmonyOS (鸿蒙)</option>
+                            <option value="微信小程序">微信小程序</option>
+                            <option value="支付宝小程序">支付宝小程序</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div className="flex items-center gap-2 mt-2 pt-2 border-t">
+                <input 
+                    type="checkbox" 
+                    id="satSwitch"
+                    checked={enableSatisfaction}
+                    onChange={(e) => setEnableSatisfaction(e.target.checked)}
+                    className="w-4 h-4 text-blue-600 rounded"
+                />
+                <label htmlFor="satSwitch" className="text-sm">启用“满意度”数据加权</label>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 搜索区域 */}
+      <div className="p-4 max-w-md mx-auto">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mb-6">
+            <h2 className="text-xl font-bold mb-4 text-center text-gray-800">
+                {userRole === "自然人" ? "您想办理什么业务？" : "企业服务一站式搜索"}
+            </h2>
+            <div className="flex gap-2">
+                <div className="relative flex-1">
+                    <input
+                        type="text"
+                        placeholder="例如：我要办健康证"
+                        className="w-full pl-10 pr-4 py-3 bg-gray-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                    />
+                    <Search className="w-5 h-5 text-gray-400 absolute left-3 top-3.5" />
+                </div>
+                <button 
+                    onClick={handleSearch}
+                    disabled={loading || csvData.length === 0}
+                    className="bg-blue-600 text-white px-5 py-3 rounded-xl font-medium hover:bg-blue-700 transition-colors disabled:bg-blue-300 whitespace-nowrap"
+                >
+                    {loading ? "..." : "搜索"}
+                </button>
+            </div>
+            {csvData.length === 0 && (
+                <p className="text-xs text-red-500 mt-2 text-center bg-red-50 py-1 rounded">
+                    ⚠️ 请先点击右上角 ⚙️ 设置图标导入数据
+                </p>
+            )}
+        </div>
+
+        {/* 意图识别结果展示 */}
+        {intent && (
+            <div className="mb-4 px-2 animate-in fade-in slide-in-from-bottom-2">
+                <div className="text-[10px] text-gray-400 mb-1 flex items-center justify-between">
+                    <span>AI 意图识别 ({apiModel})</span>
+                    <span className="bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded font-medium">
+                        {intent.target === "all" ? "全对象" : intent.target}
+                    </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                    {intent.keywords.map((k, i) => (
+                        <span key={i} className={`text-xs px-2 py-1 rounded-full border ${k === query ? 'bg-gray-100 text-gray-600 border-gray-200' : 'bg-blue-50 text-blue-600 border-blue-100'}`}>
+                            {k}
+                        </span>
+                    ))}
+                </div>
+            </div>
+        )}
+
+        {/* 结果列表 */}
+        <div className="space-y-3">
+            {results.map((item, idx) => (
+                <div key={idx} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
+                    <div className="flex justify-between items-start mb-2">
+                        <h3 className="font-bold text-gray-800 text-lg leading-tight flex-1">
+                            {item["事项名称"]}
+                        </h3>
+                        <div className="flex flex-col items-end gap-1 ml-2">
+                           {item["是否高频事项"] === "是" && (
+                               <span className="text-[10px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded font-medium whitespace-nowrap">
+                                   高频
+                               </span>
+                           )}
+                        </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 mt-3 text-sm text-gray-500">
+                        <span className="flex items-center gap-1 bg-yellow-50 text-yellow-700 px-2 py-1 rounded text-xs">
+                            <User className="w-3 h-3" />
+                            {item["服务对象"] || "通用"}
+                        </span>
+                        
+                        <span className="flex items-center gap-1 bg-purple-50 text-purple-700 px-2 py-1 rounded text-xs">
+                            <Building2 className="w-3 h-3" />
+                            {item["所属市州单位"] || "省直"}
+                        </span>
+
+                        {item["满意度"] && enableSatisfaction && (
+                            <span className="flex items-center gap-1 bg-green-50 text-green-700 px-2 py-1 rounded text-xs">
+                                <Star className="w-3 h-3" />
+                                {item["满意度"]}
+                            </span>
+                        )}
+                    </div>
+
+                    {item._debugReasons && item._debugReasons.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-gray-50 text-[10px] text-gray-400 flex flex-wrap gap-1">
+                            {item._debugReasons.map((reason, rid) => (
+                                <span key={rid} className="bg-gray-100 px-1 rounded">{reason}</span>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            ))}
+
+            {results.length === 0 && !loading && intent && (
+                <div className="text-center text-gray-400 py-10">
+                    <p>未找到服务，请尝试切换角色或定位</p>
+                </div>
+            )}
+        </div>
+      </div>
+    </div>
+  );
+}
