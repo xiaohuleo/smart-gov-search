@@ -3,10 +3,10 @@
 
 import { useState, useEffect } from "react";
 import Papa from "papaparse";
-import { Search, Upload, Settings, Building2, User, Star, MapPin, Smartphone, Server, Clock, Lightbulb, Zap, Briefcase } from "lucide-react";
+import { Search, Upload, Settings, Building2, User, Star, MapPin, Smartphone, Server, Clock, Lightbulb, Briefcase, Zap } from "lucide-react";
 
 export default function Home() {
-  // --- 1. 核心状态 ---
+  // --- 状态管理 ---
   const [csvData, setCsvData] = useState([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
@@ -15,7 +15,7 @@ export default function Home() {
   const [searchTime, setSearchTime] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
 
-  // --- 2. 配置状态 ---
+  // --- 配置管理 ---
   const [apiKey, setApiKey] = useState("");
   const [apiBaseUrl, setApiBaseUrl] = useState("https://api.groq.com/openai/v1");
   const [apiModel, setApiModel] = useState("llama3-70b-8192");
@@ -25,7 +25,7 @@ export default function Home() {
   const [userChannel, setUserChannel] = useState("Android");
   const [enableSatisfaction, setEnableSatisfaction] = useState(false);
 
-  // --- 3. 持久化配置 ---
+  // --- 持久化 ---
   useEffect(() => {
     const savedKey = localStorage.getItem("gov_search_apikey");
     const savedUrl = localStorage.getItem("gov_search_url");
@@ -40,27 +40,27 @@ export default function Home() {
     localStorage.setItem(key, value);
   };
 
-  // --- 4. 平台级知识库：民生领域词表 ---
-  // 这里定义的映射越丰富，搜索越智能
+  // --- 核心：政务全领域知识图谱 (地毯式覆盖) ---
   const GOV_KNOWLEDGE_GRAPH = {
-    // 【就业/工作篇】(解决"找工作"搜不到的问题)
-    "找工作": ["就业", "招聘", "求职", "人才", "岗位", "职业介绍"],
-    "招人": ["招聘", "企业用工", "人才引进"],
+    // 【就业/工作 - 极速映射版】
+    // 只要沾边“找工作”，把所有可能的公文词汇全部加上
+    "找工作": ["就业", "招聘", "求职", "人才", "岗位", "职业", "失业", "见习", "培训", "档案", "人社", "劳务", "补贴", "工伤", "技能"],
+    "工作": ["就业", "职业", "岗位", "单位"],
+    "招人": ["招聘", "用工", "人才引进"],
     "失业": ["就业困难", "失业登记", "失业金", "就业援助"],
-    "毕业": ["高校毕业生", "报到", "档案", "就业"],
-    "打工": ["务工", "就业", "农民工"],
-
-    // 【证照/状态篇】
-    "过期": ["到期", "换领", "有效期", "失效"],
-    "搞丢": ["遗失", "补领", "挂失"],
-    "丢了": ["遗失", "补领"],
-    "坏了": ["损坏", "换领"],
+    "毕业": ["高校毕业生", "报到", "档案", "学位", "学历"],
+    "打工": ["务工", "农民工", "劳务"],
     
-    // 【生活/办事篇】
-    "生娃": ["生育", "出生", "落户", "计生"],
-    "看病": ["医疗", "挂号", "医保", "门诊"],
-    "买房": ["不动产", "购房", "公积金"],
-    "开店": ["经营许可", "营业执照", "设立登记"],
+    // 【证照/状态】
+    "过期": ["到期", "换领", "有效期", "失效", "延续"],
+    "搞丢": ["遗失", "补领", "挂失", "补办"],
+    "丢了": ["遗失", "补领"],
+    "不见": ["遗失", "补领"],
+    
+    // 【生活高频】
+    "生娃": ["生育", "出生", "落户", "计生", "准生"],
+    "开店": ["经营许可", "营业执照", "设立登记", "个体"],
+    "买房": ["不动产", "购房", "公积金", "预售"],
   };
 
   const handleFileUpload = (e) => {
@@ -72,7 +72,7 @@ export default function Home() {
     });
   };
 
-  // --- 5. 核心搜索算法 ---
+  // --- 搜索逻辑 ---
   const handleSearch = async () => {
     if (!query || csvData.length === 0) return;
     setLoading(true);
@@ -84,14 +84,16 @@ export default function Home() {
       let finalKeywords = new Set();
       let debugSource = {}; 
 
-      // A. 基础清洗
+      // 1. 清洗 (保留核心词)
+      // "我想找工作" -> "找工作"
       const cleanQuery = query.replace(/我要|想|办理|查询|怎么|办|申请|在哪里|弄|去哪|搞|了|的|是/g, "");
       if (cleanQuery) finalKeywords.add(cleanQuery);
       finalKeywords.add(query);
 
-      // B. 本地知识库映射
+      // 2. 知识库映射 (暴力扩展)
+      // 遍历图谱，只要 Query 包含 Key，就把 Value 全部加进去
       Object.keys(GOV_KNOWLEDGE_GRAPH).forEach(key => {
-        if (query.includes(key)) {
+        if (query.includes(key) || (cleanQuery && cleanQuery.includes(key))) {
             GOV_KNOWLEDGE_GRAPH[key].forEach(word => {
                 finalKeywords.add(word);
                 debugSource[word] = "知识库";
@@ -99,7 +101,7 @@ export default function Home() {
         }
       });
 
-      // C. LLM 深度推理
+      // 3. AI 补充
       let aiTarget = "all";
       if (apiKey) {
         try {
@@ -117,7 +119,7 @@ export default function Home() {
                 aiTarget = data.target || "all";
             }
         } catch (e) {
-            console.warn("AI service unavailable");
+            console.warn("AI skipped");
         }
       }
 
@@ -129,7 +131,7 @@ export default function Home() {
         sourceMap: debugSource
       });
 
-      // Step 2: 评分引擎
+      // 4. 评分
       const scoredResults = csvData.map((item) => {
         let score = 0;
         let matchReasons = [];
@@ -146,9 +148,10 @@ export default function Home() {
             matchedKeywords.push(kw);
             let currentScore = 100;
             
-            // 核心业务词加权 (就业/证照)
-            if (["就业", "招聘", "人才", "换领", "补领"].includes(kw)) currentScore += 200;
-            
+            // 核心业务词加权
+            if (["就业", "招聘", "人才", "失业", "职业"].includes(kw)) currentScore += 150;
+            if (["遗失", "补领", "换领"].includes(kw)) currentScore += 200;
+
             score += currentScore;
             
             if (!query.includes(kw)) {
@@ -159,18 +162,17 @@ export default function Home() {
 
         if (score === 0) return { item, score: -1, matchReasons };
 
-        // 场景组合加分
-        // 搜"找工作" -> 映射出 "就业"、"招聘"
-        // 只要命中任意一个核心词，就给予高分，因为"找工作"本身意图很泛
-        const isJobSearch = matchedKeywords.some(k => ["就业", "招聘", "求职", "人才"].includes(k));
-        const isIdCard = matchedKeywords.some(k => k.includes("身份证") && ["换领", "补领", "到期"].includes(k));
+        // 场景命中逻辑 (Intent Matching)
+        // 只要命中了任何一个与"找工作"强相关的词，就认为是好结果
+        const isJobRelated = matchedKeywords.some(k => ["就业", "招聘", "求职", "人才", "职业", "失业"].includes(k));
+        const isIdCard = matchedKeywords.some(k => k.includes("身份证") && ["换领", "补领"].includes(k));
         
-        if (isJobSearch || isIdCard) {
+        if (isJobRelated || isIdCard) {
             score += 300;
-            matchReasons.unshift("🎯 意图匹配");
+            matchReasons.unshift("🎯 意图命中");
         }
 
-        // 过滤逻辑
+        // 过滤
         const itemTarget = item["服务对象"] || "";
         const itemUnit = item["所属市州单位"] || "";
         const itemChannel = item["发布渠道"] || "";
@@ -199,7 +201,7 @@ export default function Home() {
 
     } catch (err) {
       console.error(err);
-      alert("Search failed");
+      alert("Error");
     } finally {
       setSearchTime((performance.now() - startTime).toFixed(0));
       setLoading(false);
@@ -301,7 +303,7 @@ export default function Home() {
                     {item._debugReasons && item._debugReasons.length > 0 && (
                         <div className="mt-2 pt-2 border-t border-gray-50 text-[10px] text-gray-500 flex flex-wrap gap-1">
                             {item._debugReasons.map((reason, rid) => (
-                                <span key={rid} className={`px-1 rounded ${reason.includes("意图") ? 'bg-blue-100 text-blue-700 font-bold' : (reason.includes("知识") ? 'bg-orange-100 text-orange-700' : 'bg-gray-100')}`}>{reason}</span>
+                                <span key={rid} className={`px-1 rounded ${reason.includes("命中") ? 'bg-blue-100 text-blue-700 font-bold' : (reason.includes("知识") ? 'bg-orange-100 text-orange-700' : 'bg-gray-100')}`}>{reason}</span>
                             ))}
                         </div>
                     )}
