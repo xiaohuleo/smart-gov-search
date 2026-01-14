@@ -1,74 +1,42 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useEffect } from "react";
 import Papa from "papaparse";
-import { Search, Settings, Upload, CheckCircle2, AlertCircle, Building2, User, Phone, MapPin } from "lucide-react";
+import { Search, Settings, Upload, CheckCircle2, AlertCircle, Building2, User, Phone, MapPin, FileText } from "lucide-react";
+import { DEFAULT_DATA } from "./lib/data"; // 引入内置的庞大数据
 
 export default function Home() {
-  // 1. 基础数据状态
   const [csvData, setCsvData] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [loadingFile, setLoadingFile] = useState(false);
   const [intentAnalysis, setIntentAnalysis] = useState(null);
   
-  // 2. 用户上下文配置（模拟无法获取的系统信息）
+  // 默认上下文
   const [userContext, setUserContext] = useState({
-    role: "all", // all, 自然人, 法人
-    location: "all", // 对应“所属市州单位”
-    channel: "Android", // 对应“发布渠道”
-    useSatisfaction: false, // 是否开启满意度排序
+    role: "all",
+    location: "all",
+    channel: "Android", 
+    useSatisfaction: false, 
   });
 
-  // 3. API 配置
   const [apiConfig, setApiConfig] = useState({
-    apiKey: "", // Groq API Key
+    apiKey: "",
     baseUrl: "", 
     model: "llama3-70b-8192"
   });
   const [showConfig, setShowConfig] = useState(false);
 
-  // 文件上传处理
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+  // 初始化加载内置数据
+  useEffect(() => {
+    setCsvData(DEFAULT_DATA);
+  }, []);
 
-    setLoadingFile(true);
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (results) => {
-        // 简单清洗数据，确保字段存在
-        const cleanData = results.data.map(item => ({
-          ...item,
-          // 防止字段为空导致的报错
-          "事项名称": item["事项名称"] || "无名称",
-          "服务对象": item["服务对象"] || "全员",
-          "发布渠道": item["发布渠道"] || "",
-          "所属市州单位": item["所属市州单位"] || "",
-          "满意度": parseFloat(item["满意度"]) || 0, // 假设CSV有满意度字段，没有则为0
-          "搜索量": parseInt(item["搜索量"]) || 0 // 假设有，或者用是否高频代替
-        }));
-        setCsvData(cleanData);
-        setLoadingFile(false);
-      },
-      error: (err) => {
-        alert("文件解析失败: " + err.message);
-        setLoadingFile(false);
-      }
-    });
-  };
-
-  // 核心搜索逻辑
+  // 核心搜索逻辑优化
   const handleSearch = async (e) => {
     e.preventDefault();
     const query = e.target.search.value;
     if (!query || !apiConfig.apiKey) {
-      alert("请输入搜索内容并确保已配置 API Key");
-      return;
-    }
-    if (csvData.length === 0) {
-      alert("请先上传数据文件 (CSV)");
+      alert("请输入搜索内容并配置 API Key");
       return;
     }
 
@@ -77,7 +45,7 @@ export default function Home() {
     setIntentAnalysis(null);
 
     try {
-      // 第一步：调用 LLM 获取意图
+      // 1. 获取 AI 意图
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -93,71 +61,65 @@ export default function Home() {
       const intent = await res.json();
       setIntentAnalysis(intent);
 
-      // 第二步：本地加权排序与过滤 (模拟ES打分机制)
+      // 2. 智能排序算法
       const results = csvData.map(item => {
         let score = 0;
         let reasons = [];
+        const itemName = item["事项名称"] || "";
+        const itemLoc = item["所属市州单位"] || "";
 
-        // --- 1. 硬过滤 (Hard Filters) ---
-        // 渠道过滤 (模拟前端选择Android时不能搜到iOS专属)
-        if (userContext.channel && item["发布渠道"] && !item["发布渠道"].includes(userContext.channel) && !item["发布渠道"].includes("通用")) {
-            return { ...item, score: -1 }; // 排除
-        }
-
-        // 角色过滤 (如果用户手动选了法人，必须过滤掉仅限自然人的)
-        // 逻辑：如果上下文是法人，且事项只服务自然人 -> 排除
-        if (userContext.role === "法人" && item["服务对象"].includes("自然人") && !item["服务对象"].includes("法人")) return { ...item, score: -1 };
-        if (userContext.role === "自然人" && item["服务对象"].includes("法人") && !item["服务对象"].includes("自然人")) return { ...item, score: -1 };
-
-        // --- 2. 文本相关性打分 ---
-        const text = (item["事项名称"] + item["事项描述"] + item["事项标签"]).toLowerCase();
-        
-        // 匹配 LLM 提取的关键词
+        // --- 关键词匹配 (最高优先级) ---
+        // 只要匹配到一个关键词，就大幅加分
+        let keywordMatched = false;
         if (intent.keywords && Array.isArray(intent.keywords)) {
             intent.keywords.forEach(kw => {
-                if (text.includes(kw.toLowerCase())) {
+                if (itemName.includes(kw)) {
                     score += 10;
-                    reasons.push(`匹配关键词: ${kw}`);
+                    keywordMatched = true;
                 }
             });
+            if (keywordMatched) reasons.push("关键词匹配");
         }
         
-        // 匹配用户原始输入
-        if (text.includes(query.toLowerCase())) {
-            score += 5;
+        // 原始查询词匹配
+        if (itemName.includes(query)) {
+            score += 15;
+            reasons.push("精确匹配");
         }
 
-        // --- 3. 上下文加权 ---
-        // LLM 意图匹配 (如：LLM识别出是“税务”，增加税务局相关事项权重)
-        if (intent.category_intent && item["所属市州单位"] && item["所属市州单位"].includes(intent.category_intent)) {
-            score += 8;
-            reasons.push(`匹配意图部门: ${intent.category_intent}`);
+        // --- 过滤逻辑 (Filter) ---
+        
+        // 1. 角色过滤
+        const targetRole = userContext.role !== "all" ? userContext.role : intent.role;
+        if (targetRole && targetRole !== "null" && targetRole !== "all") {
+             // 如果事项明确是另一角色的，扣分或排除
+             if (targetRole === "法人" && item["服务对象"] === "自然人") return { ...item, score: -100 };
+             if (targetRole === "自然人" && item["服务对象"] === "法人") return { ...item, score: -100 };
         }
 
-        // 地点匹配 (手动选择 或 LLM推测)
-        const targetLoc = userContext.location !== "all" ? userContext.location : intent.implied_location;
-        if (targetLoc && targetLoc !== "null" && item["所属市州单位"].includes(targetLoc)) {
-            score += 15; // 此时地点匹配非常重要
-            reasons.push(`匹配地点: ${targetLoc}`);
-        }
-
-        // --- 4. 业务属性加权 ---
-        // 高频事项
-        if (item["是否高频事项"] === "是") {
-            score += 3;
-            reasons.push("高频事项");
-        }
-
-        // 满意度排序开关
-        if (userContext.useSatisfaction && item["满意度"]) {
-            // 假设满意度是 1-10 或 1-100，归一化加分
-            score += (item["满意度"] / 10); 
+        // 2. 关键：地域匹配 (Location Handling)
+        // 逻辑：如果用户想要“怀化”的服务，那么“怀化XX”加分，“长沙XX”扣分
+        const targetLoc = userContext.location !== "all" ? userContext.location : intent.location;
+        
+        if (targetLoc && targetLoc !== "null" && targetLoc !== "all") {
+            // 用户指定了地点
+            if (itemName.includes(targetLoc) || itemLoc.includes(targetLoc)) {
+                score += 20; // 强匹配地点
+                reasons.push(`匹配地区: ${targetLoc}`);
+            } else if (itemLoc !== "全省通用" && !itemLoc.includes(targetLoc)) {
+                // 如果事项是别的城市的（比如用户搜怀化，但这事项是长沙的），大幅扣分
+                score -= 50; 
+            }
+        } else {
+            // 用户没指定地点，优先展示“全省通用”或当前选择的地点
+            // 这里为了演示，假设不搜地点时，不因地点扣分
         }
 
         return { ...item, score, matchReasons: reasons };
       })
-      .filter(item => item.score > 0) // 过滤掉不匹配的
-      .sort((a, b) => b.score - a.score); // 按分数降序
+      .filter(item => item.score > 0) // 只显示正分结果
+      .sort((a, b) => b.score - a.score) // 分数从高到低
+      .slice(0, 50); // 只取前50条，避免页面太长
 
       setSearchResults(results);
 
@@ -168,225 +130,245 @@ export default function Home() {
     }
   };
 
+  // CSV 上传处理 (保留功能)
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (results) => {
+        setCsvData(results.data);
+        alert(`已导入 ${results.data.length} 条外部数据`);
+      }
+    });
+  };
+
   return (
-    <main className="max-w-4xl mx-auto p-4 md:p-8 space-y-6">
-      {/* 顶部 Header */}
-      <div className="flex justify-between items-center border-b pb-4">
+    <main className="max-w-4xl mx-auto p-4 md:p-8 space-y-6 bg-slate-50 min-h-screen">
+      {/* 标题 */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b pb-4 gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">智慧政务服务搜索</h1>
-          <p className="text-sm text-slate-500">基于 LLM 意图识别 + 本地数据动态匹配</p>
+          <h1 className="text-3xl font-bold text-slate-800 flex items-center gap-2">
+            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white">
+              <FileText size={20} />
+            </div>
+            政务服务智能搜索
+          </h1>
+          <p className="text-sm text-slate-500 mt-1">
+            已内置 {DEFAULT_DATA.length}+ 条真实服务事项 · 支持自然语言语义匹配
+          </p>
         </div>
         <button 
           onClick={() => setShowConfig(!showConfig)}
-          className="p-2 bg-slate-100 rounded-full hover:bg-slate-200 transition"
+          className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition ${showConfig ? 'bg-blue-100 text-blue-700' : 'bg-white border hover:bg-slate-50'}`}
         >
-          <Settings className="w-5 h-5 text-slate-600" />
+          <Settings className="w-4 h-4" />
+          API 设置
         </button>
       </div>
 
-      {/* 配置面板 (可折叠) */}
+      {/* 设置面板 */}
       {showConfig && (
-        <div className="bg-white p-4 rounded-lg shadow-sm border space-y-4 animate-in fade-in slide-in-from-top-2">
-          <h3 className="font-semibold text-slate-700">环境与 API 配置</h3>
+        <div className="bg-white p-6 rounded-xl shadow-lg border border-blue-100 animate-in fade-in slide-in-from-top-2">
+          <h3 className="font-bold text-slate-700 mb-3 flex items-center gap-2">
+             <Settings className="w-4 h-4"/> 模型配置
+          </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1">Groq API Key (必填)</label>
+              <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Groq API Key</label>
               <input 
                 type="password" 
                 value={apiConfig.apiKey}
                 onChange={e => setApiConfig({...apiConfig, apiKey: e.target.value})}
-                className="w-full p-2 border rounded text-sm"
-                placeholder="gsk_..."
+                className="w-full p-2.5 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                placeholder="gsk_xxxxxxxx..."
               />
             </div>
              <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1">自定义 API Base URL (选填)</label>
-              <input 
-                type="text" 
-                value={apiConfig.baseUrl}
-                onChange={e => setApiConfig({...apiConfig, baseUrl: e.target.value})}
-                className="w-full p-2 border rounded text-sm"
-                placeholder="https://api.groq.com/openai/v1"
-              />
+              <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Model</label>
+              <select 
+                value={apiConfig.model}
+                onChange={e => setApiConfig({...apiConfig, model: e.target.value})}
+                className="w-full p-2.5 border rounded-lg text-sm bg-white"
+              >
+                <option value="llama3-70b-8192">Llama3-70b (推荐)</option>
+                <option value="mixtral-8x7b-32768">Mixtral-8x7b</option>
+                <option value="gemma-7b-it">Gemma-7b</option>
+              </select>
             </div>
           </div>
-          <div className="bg-blue-50 p-3 rounded text-xs text-blue-700">
-             提示：若无 Groq Key，可访问 console.groq.com 免费申请。
-          </div>
+          <p className="text-xs text-slate-400 mt-3">
+            * 您的 Key 仅存储在本地浏览器中，用于调用 Groq 免费 API 进行意图分析。
+          </p>
         </div>
       )}
 
-      {/* 上下文模拟控制区 */}
-      <div className="bg-white p-4 rounded-lg shadow-sm border grid grid-cols-2 md:grid-cols-4 gap-4">
+      {/* 模拟环境控制栏 */}
+      <div className="bg-white p-4 rounded-xl shadow-sm border grid grid-cols-2 md:grid-cols-4 gap-4">
+        {/* 角色 */}
         <div className="space-y-1">
-          <label className="text-xs font-semibold text-slate-500 flex items-center gap-1">
-            <User className="w-3 h-3"/> 模拟角色
+          <label className="text-xs font-bold text-slate-400 flex items-center gap-1 uppercase">
+            <User className="w-3 h-3"/> 用户角色
           </label>
           <select 
-            className="w-full text-sm border-slate-200 rounded-md p-1.5 border"
+            className="w-full text-sm font-medium text-slate-700 bg-transparent border-none p-0 focus:ring-0 cursor-pointer"
             value={userContext.role}
             onChange={(e) => setUserContext({...userContext, role: e.target.value})}
           >
-            <option value="all">不限角色</option>
+            <option value="all">不限 (自动识别)</option>
             <option value="自然人">自然人 (个人)</option>
             <option value="法人">法人 (企业)</option>
           </select>
         </div>
 
+        {/* 地点 */}
         <div className="space-y-1">
-          <label className="text-xs font-semibold text-slate-500 flex items-center gap-1">
-            <MapPin className="w-3 h-3"/> 所在位置
+          <label className="text-xs font-bold text-slate-400 flex items-center gap-1 uppercase">
+            <MapPin className="w-3 h-3"/> 当前定位
           </label>
           <select 
-            className="w-full text-sm border-slate-200 rounded-md p-1.5 border"
+            className="w-full text-sm font-medium text-slate-700 bg-transparent border-none p-0 focus:ring-0 cursor-pointer"
             value={userContext.location}
             onChange={(e) => setUserContext({...userContext, location: e.target.value})}
           >
-            <option value="all">全省</option>
-            <option value="广州">广州市</option>
-            <option value="深圳">深圳市</option>
-            <option value="珠海">珠海市</option>
-            {/* 实际项目中这里应从CSV动态提取 */}
+            <option value="all">全省范围</option>
+            <option value="长沙">长沙市</option>
+            <option value="怀化">怀化市</option>
+            <option value="株洲">株洲市</option>
+            <option value="湘潭">湘潭市</option>
+            <option value="衡阳">衡阳市</option>
+            <option value="邵阳">邵阳市</option>
+            <option value="岳阳">岳阳市</option>
+            <option value="常德">常德市</option>
+            <option value="张家界">张家界市</option>
+            <option value="益阳">益阳市</option>
+            <option value="郴州">郴州市</option>
+            <option value="永州">永州市</option>
+            <option value="娄底">娄底市</option>
+            <option value="湘西">湘西州</option>
           </select>
         </div>
 
+        {/* 渠道 */}
         <div className="space-y-1">
-          <label className="text-xs font-semibold text-slate-500 flex items-center gap-1">
+          <label className="text-xs font-bold text-slate-400 flex items-center gap-1 uppercase">
             <Phone className="w-3 h-3"/> 终端渠道
           </label>
           <select 
-            className="w-full text-sm border-slate-200 rounded-md p-1.5 border"
+            className="w-full text-sm font-medium text-slate-700 bg-transparent border-none p-0 focus:ring-0 cursor-pointer"
             value={userContext.channel}
             onChange={(e) => setUserContext({...userContext, channel: e.target.value})}
           >
             <option value="Android">Android App</option>
             <option value="iOS">iOS App</option>
-            <option value="PC">PC 网页端</option>
             <option value="WeChat">微信小程序</option>
           </select>
         </div>
 
-        <div className="flex items-center space-x-2 pt-5">
-           <input 
-            type="checkbox" 
-            id="satisfaction"
-            checked={userContext.useSatisfaction}
-            onChange={(e) => setUserContext({...userContext, useSatisfaction: e.target.checked})}
-            className="rounded text-blue-600 focus:ring-blue-500"
-           />
-           <label htmlFor="satisfaction" className="text-sm text-slate-700 cursor-pointer">
-             按满意度优先
-           </label>
+        {/* 导入按钮 */}
+        <div className="flex justify-end items-center">
+             <label className="cursor-pointer flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium bg-blue-50 px-3 py-1.5 rounded-lg transition">
+                <Upload className="w-3 h-3"/>
+                导入 CSV
+                <input type="file" className="hidden" accept=".csv" onChange={handleFileUpload}/>
+             </label>
         </div>
       </div>
 
-      {/* CSV 上传区 */}
-      {csvData.length === 0 ? (
-        <div className="border-2 border-dashed border-slate-300 rounded-lg p-10 text-center hover:bg-slate-50 transition">
-          <Upload className="w-10 h-10 mx-auto text-slate-400 mb-3" />
-          <h3 className="text-lg font-medium text-slate-700">导入事项数据文件</h3>
-          <p className="text-sm text-slate-500 mb-4">支持 CSV 格式，需包含事项名称、编码、服务对象等字段</p>
-          <input 
-            type="file" 
-            accept=".csv"
-            onChange={handleFileUpload}
-            className="block w-full text-sm text-slate-500
-              file:mr-4 file:py-2 file:px-4
-              file:rounded-full file:border-0
-              file:text-sm file:font-semibold
-              file:bg-blue-50 file:text-blue-700
-              hover:file:bg-blue-100
-            "
+      {/* 搜索框区域 */}
+      <div className="relative group">
+        <div className="absolute -inset-1 bg-gradient-to-r from-blue-200 to-indigo-200 rounded-2xl blur opacity-30 group-hover:opacity-60 transition duration-200"></div>
+        <form onSubmit={handleSearch} className="relative bg-white rounded-xl shadow-lg flex items-center p-2">
+          <Search className="ml-4 text-slate-400 w-6 h-6 shrink-0" />
+          <input
+            name="search"
+            type="text"
+            placeholder="请用自然语言描述您的需求，例如：'想查一下怀化的公积金'..."
+            className="w-full p-3 pl-3 text-lg outline-none text-slate-700 placeholder:text-slate-400"
+            disabled={isSearching}
           />
-          {loadingFile && <p className="mt-2 text-blue-600">正在解析数据...</p>}
-        </div>
-      ) : (
-        <div className="flex items-center justify-between bg-green-50 px-4 py-2 rounded text-sm text-green-800">
-          <span className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4"/> 已加载 {csvData.length} 条服务事项</span>
-          <button onClick={() => setCsvData([])} className="text-green-600 hover:underline">重新上传</button>
-        </div>
-      )}
+          <button 
+            type="submit" 
+            disabled={isSearching}
+            className="bg-blue-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-blue-700 disabled:bg-slate-300 transition shrink-0"
+          >
+            {isSearching ? "分析中..." : "搜索"}
+          </button>
+        </form>
+      </div>
 
-      {/* 搜索框 */}
-      <form onSubmit={handleSearch} className="relative">
-        <input
-          name="search"
-          type="text"
-          placeholder="请输入您的需求，例如：'我想开一家餐饮店' 或 '提取公积金'..."
-          className="w-full p-4 pl-12 rounded-xl border-2 border-slate-200 focus:border-blue-500 focus:outline-none shadow-sm text-lg"
-          disabled={isSearching}
-        />
-        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-6 h-6" />
-        <button 
-          type="submit" 
-          disabled={isSearching}
-          className="absolute right-2 top-2 bottom-2 bg-blue-600 text-white px-6 rounded-lg font-medium hover:bg-blue-700 disabled:bg-slate-300 transition"
-        >
-          {isSearching ? "分析中..." : "智能搜索"}
-        </button>
-      </form>
-
-      {/* 意图分析展示 (Debug视图) */}
+      {/* 分析结果调试条 */}
       {intentAnalysis && (
-        <div className="bg-indigo-50 p-3 rounded-lg text-xs text-indigo-800 space-y-1">
-          <p><strong>🤖 AI 意图识别结果：</strong></p>
-          <div className="flex gap-4 flex-wrap">
-            <span>关键词: {intentAnalysis.keywords?.join(", ")}</span>
-            <span>推测角色: {intentAnalysis.implied_role || "未识别"}</span>
-            <span>推测地点: {intentAnalysis.implied_location || "未识别"}</span>
-            <span>意图领域: {intentAnalysis.category_intent || "通用"}</span>
+        <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl flex flex-wrap gap-4 text-sm text-indigo-900 items-center animate-in fade-in slide-in-from-top-1">
+          <div className="font-bold flex items-center gap-2">
+             <div className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse"/>
+             AI 意图识别:
           </div>
+          <div className="flex gap-2 items-center">
+            <span className="text-indigo-400 text-xs uppercase font-bold">关键词</span>
+            <div className="flex gap-1">
+                {intentAnalysis.keywords?.map(k => (
+                    <span key={k} className="bg-white px-2 py-0.5 rounded border border-indigo-100 shadow-sm">{k}</span>
+                ))}
+            </div>
+          </div>
+          {intentAnalysis.location && intentAnalysis.location !== "null" && (
+             <div className="flex gap-2 items-center">
+                <span className="text-indigo-400 text-xs uppercase font-bold">地点</span>
+                <span className="bg-white px-2 py-0.5 rounded border border-indigo-100 shadow-sm font-medium">{intentAnalysis.location}</span>
+             </div>
+          )}
         </div>
       )}
 
       {/* 结果列表 */}
-      <div className="space-y-4">
+      <div className="space-y-3">
         {searchResults.length > 0 ? (
            searchResults.map((item, idx) => (
-            <div key={idx} className="bg-white p-5 rounded-lg border hover:shadow-md transition group">
-              <div className="flex justify-between items-start">
-                <div>
-                   <div className="flex items-center gap-2 mb-1">
-                      <h3 className="text-lg font-bold text-slate-800 group-hover:text-blue-600">
-                        {item["事项名称"]}
-                      </h3>
-                      {item["是否高频事项"] === "是" && (
-                        <span className="px-2 py-0.5 bg-orange-100 text-orange-700 text-xs rounded-full">高频</span>
-                      )}
-                      <span className="text-xs text-slate-400 border px-1 rounded">{item["事项编码"]}</span>
+            <div key={idx} className="bg-white p-4 rounded-xl border border-slate-100 hover:shadow-md hover:border-blue-200 transition group cursor-pointer">
+              <div className="flex justify-between items-start gap-4">
+                <div className="flex-1">
+                   <div className="flex items-start justify-between">
+                       <h3 className="text-lg font-bold text-slate-800 group-hover:text-blue-600 mb-1">
+                         {item["事项名称"]}
+                       </h3>
                    </div>
                    
-                   <p className="text-sm text-slate-500 mb-3 line-clamp-2">{item["事项描述"] || "暂无描述"}</p>
-                   
-                   <div className="flex flex-wrap gap-y-2 gap-x-4 text-xs text-slate-500">
-                      <span className="flex items-center gap-1 bg-slate-100 px-2 py-1 rounded">
-                        <Building2 className="w-3 h-3"/> {item["所属市州单位"] || "省级通用"}
+                   <div className="flex flex-wrap gap-2 mt-2 text-xs text-slate-500">
+                      <span className="flex items-center gap-1 bg-slate-50 px-2 py-1 rounded text-slate-600">
+                        <Building2 className="w-3 h-3"/> {item["所属市州单位"]}
                       </span>
-                      <span className="flex items-center gap-1 bg-slate-100 px-2 py-1 rounded">
+                      <span className="flex items-center gap-1 bg-slate-50 px-2 py-1 rounded text-slate-600">
                         <User className="w-3 h-3"/> {item["服务对象"]}
                       </span>
+                      {item.matchReasons?.map((reason, i) => (
+                          <span key={i} className="px-2 py-1 rounded bg-green-50 text-green-700 border border-green-100">
+                              {reason}
+                          </span>
+                      ))}
                    </div>
                 </div>
-                {/* 调试用：显示匹配得分 */}
-                <div className="text-right hidden md:block">
-                   <div className="text-2xl font-bold text-blue-600">{item.score.toFixed(1)}</div>
-                   <div className="text-xs text-slate-400">匹配度得分</div>
+                
+                <div className="flex flex-col items-end shrink-0">
+                    <span className="text-xs text-slate-300 font-mono mb-1">{item["事项编码"]}</span>
+                    <div className="w-10 h-10 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-sm">
+                        Go
+                    </div>
                 </div>
               </div>
-              
-              {/* 匹配原因展示 */}
-              {item.matchReasons && item.matchReasons.length > 0 && (
-                <div className="mt-3 pt-3 border-t border-slate-100 text-xs text-slate-400">
-                  <span className="font-semibold">匹配原因：</span> {item.matchReasons.join(" · ")}
-                </div>
-              )}
             </div>
            ))
         ) : (
-          !isSearching && intentAnalysis && (
-            <div className="text-center py-10 text-slate-500">
-              <AlertCircle className="w-10 h-10 mx-auto mb-2 text-slate-300"/>
-              <p>未找到匹配的服务事项，请尝试调整筛选条件或搜索词。</p>
+          !isSearching && (
+            <div className="text-center py-20">
+               <div className="inline-flex items-center justify-center w-16 h-16 bg-slate-100 rounded-full mb-4">
+                  <Search className="w-8 h-8 text-slate-300"/>
+               </div>
+               <h3 className="text-lg font-medium text-slate-600">准备就绪</h3>
+               <p className="text-slate-400 mt-2 max-w-sm mx-auto">
+                 {intentAnalysis ? "抱歉，没有找到匹配的服务事项。请尝试换个说法或切换城市。" : "请输入上方搜索框开始体验智能政务搜索"}
+               </p>
             </div>
           )
         )}
